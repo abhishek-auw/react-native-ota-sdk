@@ -16,5 +16,8 @@ Pod::Spec.new do |s|
   s.source_files = "ios/**/*.{h,m,mm,swift,cpp}"
   s.private_header_files = "ios/**/*.h"
 
+  # ZIPFoundation is used by BundleManager to extract downloaded bundle ZIPs
+  s.dependency "ZIPFoundation", "~> 0.9"
+
   install_modules_dependencies(s)
 end
