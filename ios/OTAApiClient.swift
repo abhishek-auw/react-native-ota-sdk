@@ -5,6 +5,9 @@ struct OTAConfig {
     let serverUrl: String
     let channel: String
     let crashThreshold: Int
+    /// Optional ECDSA P-256 public key (PEM SPKI) embedded at build time.
+    /// When set, every bundle must carry a valid signature from the server.
+    let signingPublicKey: String?
 }
 
 struct UpdateCheckResult {
@@ -18,6 +21,12 @@ struct UpdatePayload {
     let hash: String
     let mandatory: Bool
     let releaseNotes: String?
+    /// ECDSA-SHA256 signature (base64) — present when the bundle was signed by CI
+    let signature: String?
+    /// Delta patch fields — present when server has a patch for the device's current bundle
+    let patchUrl: String?
+    let patchHash: String?
+    let fromHash: String?
 }
 
 /// Thin HTTP client for the OTA backend. Synchronous — always call from background thread.
@@ -82,8 +91,12 @@ class OTAApiClient {
                 bundleId:     bundleId,
                 downloadUrl:  downloadUrl,
                 hash:         hash,
-                mandatory:    body["mandatory"] as? Bool ?? false,
-                releaseNotes: body["releaseNotes"] as? String
+                mandatory:    body["mandatory"]    as? Bool   ?? false,
+                releaseNotes: body["releaseNotes"] as? String,
+                signature:    body["signature"]    as? String,
+                patchUrl:     body["patchUrl"]     as? String,
+                patchHash:    body["patchHash"]    as? String,
+                fromHash:     body["fromHash"]     as? String
             )
         )
     }

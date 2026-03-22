@@ -16,6 +16,7 @@ RCT_EXTERN_METHOD(checkForUpdate:
 RCT_EXTERN_METHOD(downloadBundle:(NSString *)bundleId
                   downloadUrl:(NSString *)downloadUrl
                   expectedHash:(NSString *)expectedHash
+                  options:(NSDictionary *)options
                   resolver:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 

@@ -82,6 +82,62 @@ class BundleManager(private val context: Context, private val prefs: OTAPrefs) {
     }
 
     /**
+     * Apply a delta patch ZIP on top of an existing bundle directory.
+     *
+     * The patch ZIP (produced by DeltaService on the server) contains:
+     * - All changed/added files (same relative paths as the full bundle)
+     * - `_delta_manifest.json` describing deleted files
+     *
+     * Steps:
+     *  1. Copy the base bundle directory into a new dir keyed by toHash
+     *  2. Extract the patch ZIP over it (overwrites changed/added files)
+     *  3. Delete files listed in `_delta_manifest.json`
+     *  4. Record the patched bundle as pending
+     *
+     * @return Path to the JS bundle file after patching
+     */
+    fun applyDeltaPatch(
+        patchZipFile: File,
+        fromHash: String,
+        toHash: String,
+        bundleId: String,
+    ): String {
+        val baseBundleDir = File(otaRoot, fromHash)
+        if (!baseBundleDir.exists()) {
+            throw IllegalStateException(
+                "Cannot apply delta: base bundle dir not found for hash $fromHash"
+            )
+        }
+
+        val targetDir = File(otaRoot, toHash).also { it.mkdirs() }
+
+        // 1. Seed the target dir from the base (copy all files)
+        baseBundleDir.copyRecursively(targetDir, overwrite = true)
+
+        // 2. Overlay patch contents (changed + added files)
+        unzip(patchZipFile, targetDir)
+
+        // 3. Apply deletions from the manifest
+        val manifestFile = File(targetDir, "_delta_manifest.json")
+        if (manifestFile.exists()) {
+            applyDeltaDeletions(manifestFile, targetDir)
+            manifestFile.delete()
+        }
+
+        // 4. Locate JS bundle
+        val bundleFile = findBundleFile(targetDir)
+            ?: throw IllegalStateException("No JS bundle found after patching to hash $toHash")
+
+        Log.d(TAG, "Delta applied: ${bundleFile.absolutePath} (from=$fromHash to=$toHash)")
+
+        prefs.pendingBundlePath = bundleFile.absolutePath
+        prefs.pendingBundleHash = toHash
+        prefs.pendingBundleId   = bundleId
+
+        return bundleFile.absolutePath
+    }
+
+    /**
      * Get the active JS bundle path.
      * Returns null if no OTA bundle has ever been applied (use bundled asset).
      */
@@ -140,4 +196,25 @@ class BundleManager(private val context: Context, private val prefs: OTAPrefs) {
             .map { File(dir, it) }
             .firstOrNull { it.exists() }
             ?: dir.walk().firstOrNull { it.name.endsWith(".bundle") }
+
+    /**
+     * Parse `_delta_manifest.json` and delete any files listed under "deleted".
+     * Expected JSON shape: { "deleted": ["path/to/file", ...], ... }
+     */
+    private fun applyDeltaDeletions(manifestFile: File, bundleDir: File) {
+        try {
+            val json = org.json.JSONObject(manifestFile.readText())
+            val deleted = json.optJSONArray("deleted") ?: return
+            for (i in 0 until deleted.length()) {
+                val relativePath = deleted.getString(i)
+                val target = File(bundleDir, relativePath)
+                if (target.exists()) {
+                    target.delete()
+                    Log.d(TAG, "Delta: deleted $relativePath")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not parse delta manifest: ${e.message}")
+        }
+    }
 }

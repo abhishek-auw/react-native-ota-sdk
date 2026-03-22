@@ -16,6 +16,8 @@ export interface ConfigMap {
   serverUrl: string;
   channel: string;
   crashThreshold: number;
+  /** Optional ECDSA P-256 public key (PEM SPKI) embedded at build time for bundle signature verification */
+  signingPublicKey?: string;
 }
 
 export interface UpdateCheckResult {
@@ -25,11 +27,27 @@ export interface UpdateCheckResult {
   hash?: string;
   mandatory?: boolean;
   releaseNotes?: string;
+  /** ECDSA-SHA256 signature (base64) — present when the bundle was signed by CI */
+  signature?: string;
+  /** Delta fields — present when the server has a patch for the device's current bundle */
+  patchUrl?: string;
+  patchHash?: string;
+  fromHash?: string;
+}
+
+export interface DownloadOptions {
+  patchUrl?: string;
+  patchHash?: string;
+  fromHash?: string;
+  /** ECDSA-SHA256 signature (base64) — forwarded from the update check result */
+  signature?: string;
 }
 
 export interface DownloadResult {
   bundlePath: string;
   hash: string;
+  /** true when a delta patch was applied instead of a full download */
+  delta: boolean;
 }
 
 export interface SDKStatus {
@@ -51,6 +69,7 @@ export interface Spec extends TurboModule {
     bundleId: string,
     downloadUrl: string,
     expectedHash: string,
+    options?: DownloadOptions | null,
   ): Promise<DownloadResult>;
   applyPendingBundle(): Promise<string>;
   getStatus(): Promise<SDKStatus>;

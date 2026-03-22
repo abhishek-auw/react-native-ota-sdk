@@ -33,6 +33,12 @@ class OTAApiClient {
         val hash: String,
         val mandatory: Boolean,
         val releaseNotes: String?,
+        /** ECDSA-SHA256 signature (base64) — present when the bundle was signed by CI */
+        val signature: String? = null,
+        /** Delta patch URL — present when the server has a patch from the device's current bundle */
+        val patchUrl: String? = null,
+        val patchHash: String? = null,
+        val fromHash: String? = null,
     )
 
     fun checkForUpdate(
@@ -74,11 +80,15 @@ class OTAApiClient {
         return UpdateCheckResult(
             updateAvailable = true,
             update = UpdatePayload(
-                bundleId    = json.getString("bundleId"),
-                downloadUrl = json.getString("downloadUrl"),
-                hash        = json.getString("hash"),
-                mandatory   = json.optBoolean("mandatory", false),
+                bundleId     = json.getString("bundleId"),
+                downloadUrl  = json.getString("downloadUrl"),
+                hash         = json.getString("hash"),
+                mandatory    = json.optBoolean("mandatory", false),
                 releaseNotes = json.optString("releaseNotes").ifEmpty { null },
+                signature    = json.optString("signature").ifEmpty { null },
+                patchUrl     = json.optString("patchUrl").ifEmpty { null },
+                patchHash    = json.optString("patchHash").ifEmpty { null },
+                fromHash     = json.optString("fromHash").ifEmpty { null },
             )
         )
     }

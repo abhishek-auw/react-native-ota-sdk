@@ -19,6 +19,17 @@ export interface UpdateInfo {
   hash: string;
   mandatory: boolean;
   releaseNotes?: string;
+  /** Delta patch — present when the server has a patch from the device's current bundle */
+  patchUrl?: string;
+  patchHash?: string;
+  fromHash?: string;
+}
+
+export interface DownloadResult {
+  bundlePath: string;
+  hash: string;
+  /** true when a delta patch was applied instead of a full download */
+  delta: boolean;
 }
 
 export type UpdateStatus =

@@ -26,10 +26,11 @@ class OtaSdk: RCTEventEmitter {
 
     @objc func configure(_ configDict: NSDictionary) {
         config = OTAConfig(
-            appId:          configDict["appId"]      as? String ?? "",
-            serverUrl:      configDict["serverUrl"]  as? String ?? "",
-            channel:        configDict["channel"]    as? String ?? "production",
-            crashThreshold: configDict["crashThreshold"] as? Int ?? 3
+            appId:            configDict["appId"]          as? String ?? "",
+            serverUrl:        configDict["serverUrl"]       as? String ?? "",
+            channel:          configDict["channel"]         as? String ?? "production",
+            crashThreshold:   configDict["crashThreshold"]  as? Int    ?? 3,
+            signingPublicKey: configDict["signingPublicKey"] as? String
         )
         NSLog("[OTA] Configured appId=%@ server=%@", config!.appId, config!.serverUrl)
 
@@ -71,7 +72,13 @@ class OtaSdk: RCTEventEmitter {
                     map["downloadUrl"] = u.downloadUrl
                     map["hash"]        = u.hash
                     map["mandatory"]   = u.mandatory
-                    if let notes = u.releaseNotes { map["releaseNotes"] = notes }
+                    if let notes      = u.releaseNotes { map["releaseNotes"] = notes }
+                    // Signing — only present when the bundle was signed by CI
+                    if let signature  = u.signature  { map["signature"]  = signature }
+                    // Delta fields — only present when server has a patch
+                    if let patchUrl  = u.patchUrl  { map["patchUrl"]  = patchUrl }
+                    if let patchHash = u.patchHash { map["patchHash"] = patchHash }
+                    if let fromHash  = u.fromHash  { map["fromHash"]  = fromHash }
                 }
                 resolve(map)
 
@@ -83,10 +90,16 @@ class OtaSdk: RCTEventEmitter {
     }
 
     // ── downloadBundle ───────────────────────────────────────────────
+    //
+    // `options` (optional NSDictionary from JS):
+    //   { patchUrl, patchHash, fromHash }
+    // When all three are present and the device's active bundle hash matches
+    // `fromHash`, we download only the patch and apply it as a delta.
 
     @objc func downloadBundle(_ bundleId: String,
                                downloadUrl: String,
                                expectedHash: String,
+                               options: NSDictionary?,
                                resolver resolve: @escaping RCTPromiseResolveBlock,
                                rejecter  reject: @escaping RCTPromiseRejectBlock) {
         guard let cfg = config else {
@@ -100,24 +113,80 @@ class OtaSdk: RCTEventEmitter {
             self.sendEvent(withName: "OTA_EVENT",
                            body: ["type": "download_started", "bundleId": bundleId])
 
-            let zipURL = self.otaBundleManager.zipURL(forHash: expectedHash)
+            let patchUrl  = options?["patchUrl"]  as? String
+            let patchHash = options?["patchHash"] as? String
+            let fromHash  = options?["fromHash"]  as? String
+            let signature = options?["signature"] as? String  // ECDSA signature from server
+            let activeHash = self.prefs.activeBundleHash
+            let useDelta = patchUrl != nil && patchHash != nil && fromHash != nil
+                           && fromHash == activeHash
 
             do {
-                let result = try self.downloader.download(
-                    from: downloadUrl,
-                    to: zipURL,
-                    expectedHash: expectedHash,
-                    onProgress: { [weak self] progress in
-                        self?.sendEvent(withName: "OTA_DOWNLOAD_PROGRESS",
-                                        body: ["bundleId": bundleId, "progress": progress])
-                    }
-                )
+                let bundlePath: String
+                let downloadedZipURL: URL
 
-                let bundlePath = try self.otaBundleManager.storePendingBundle(
-                    zipURL:   result.fileURL,
-                    hash:     result.computedHash,
-                    bundleId: bundleId
-                )
+                if useDelta {
+                    NSLog("[OTA] Using delta download for %@ (from=%@)", bundleId, fromHash!)
+
+                    let patchZipURL = self.otaBundleManager.zipURL(forHash: "patch_\(expectedHash)")
+                    let patchResult = try self.downloader.download(
+                        from: patchUrl!,
+                        to: patchZipURL,
+                        expectedHash: patchHash!,
+                        onProgress: { [weak self] progress in
+                            self?.sendEvent(withName: "OTA_DOWNLOAD_PROGRESS",
+                                            body: ["bundleId": bundleId, "progress": progress])
+                        }
+                    )
+                    downloadedZipURL = patchResult.fileURL
+
+                    bundlePath = try self.otaBundleManager.applyDeltaPatch(
+                        patchZipURL: patchResult.fileURL,
+                        fromHash: fromHash!,
+                        toHash: expectedHash,
+                        bundleId: bundleId
+                    )
+
+                } else {
+                    NSLog("[OTA] Using full bundle download for %@", bundleId)
+
+                    let zipURL = self.otaBundleManager.zipURL(forHash: expectedHash)
+                    let result = try self.downloader.download(
+                        from: downloadUrl,
+                        to: zipURL,
+                        expectedHash: expectedHash,
+                        onProgress: { [weak self] progress in
+                            self?.sendEvent(withName: "OTA_DOWNLOAD_PROGRESS",
+                                            body: ["bundleId": bundleId, "progress": progress])
+                        }
+                    )
+                    downloadedZipURL = result.fileURL
+                    bundlePath = try self.otaBundleManager.storePendingBundle(
+                        zipURL:   result.fileURL,
+                        hash:     result.computedHash,
+                        bundleId: bundleId
+                    )
+                }
+
+                // ── ECDSA signature verification ─────────────────────────────
+                if let publicKey = cfg.signingPublicKey, !publicKey.isEmpty {
+                    guard let sig = signature, !sig.isEmpty else {
+                        reject("SIGNING_REQUIRED",
+                               "Bundle signing is enforced but this bundle carries no signature.", nil)
+                        return
+                    }
+                    let valid = HashVerifier.verifyEcdsaSignature(
+                        at: downloadedZipURL,
+                        signatureB64: sig,
+                        publicKeyPem: publicKey
+                    )
+                    guard valid else {
+                        reject("SIGNATURE_INVALID",
+                               "Bundle signature verification failed — bundle may be tampered.", nil)
+                        return
+                    }
+                    NSLog("[OTA] Bundle signature verified OK for %@", bundleId)
+                }
 
                 // Analytics — fire and forget
                 self.apiClient.reportEvent(serverUrl: cfg.serverUrl, appId: cfg.appId,
@@ -127,9 +196,10 @@ class OtaSdk: RCTEventEmitter {
                 self.sendEvent(withName: "OTA_EVENT",
                                body: ["type": "download_complete",
                                       "bundleId": bundleId,
-                                      "bundlePath": bundlePath])
+                                      "bundlePath": bundlePath,
+                                      "delta": useDelta])
 
-                resolve(["bundlePath": bundlePath, "hash": result.computedHash])
+                resolve(["bundlePath": bundlePath, "hash": expectedHash, "delta": useDelta])
 
             } catch let e as DownloadError {
                 NSLog("[OTA] Download failed: %@", e.message)

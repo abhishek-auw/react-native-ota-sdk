@@ -48,6 +48,15 @@ export interface OTAConfig {
   serverUrl: string;
   channel?: string;
   crashThreshold?: number;
+  /**
+   * Optional ECDSA P-256 public key (PEM SPKI format), embedded in the app at build time.
+   * When provided, every bundle downloaded from the server must carry a valid signature.
+   * Bundles without a signature, or with an invalid one, will be rejected.
+   *
+   * Generate a key pair in the dashboard (Apps → Signing Key). Store the private key as
+   * OTA_SIGNING_KEY in CI so the CLI can sign bundles on upload.
+   */
+  signingPublicKey?: string;
 }
 
 export interface UpdateInfo {
@@ -57,6 +66,12 @@ export interface UpdateInfo {
   hash: string;
   mandatory: boolean;
   releaseNotes?: string;
+  /** ECDSA-SHA256 signature (base64) — present when the bundle was signed by CI */
+  signature?: string;
+  /** Delta patch — present when the server has a patch from the device's current bundle */
+  patchUrl?: string;
+  patchHash?: string;
+  fromHash?: string;
 }
 
 export interface NoUpdate {
@@ -78,7 +93,7 @@ export interface DownloadProgressEvent {
 
 export type OTANativeEvent =
   | { type: 'download_started'; bundleId: string }
-  | { type: 'download_complete'; bundleId: string; bundlePath: string }
+  | { type: 'download_complete'; bundleId: string; bundlePath: string; delta: boolean }
   | { type: 'download_failed'; error: string }
   | { type: 'bundle_applied'; path: string }
   | { type: 'rollback'; reason?: string };
@@ -92,10 +107,11 @@ export type OTANativeEvent =
 export function configure(config: OTAConfig): void {
   assertNative();
   OtaSdk.configure({
-    appId:          config.appId,
-    serverUrl:      config.serverUrl,
-    channel:        config.channel ?? 'production',
-    crashThreshold: config.crashThreshold ?? 3,
+    appId:            config.appId,
+    serverUrl:        config.serverUrl,
+    channel:          config.channel ?? 'production',
+    crashThreshold:   config.crashThreshold ?? 3,
+    signingPublicKey: config.signingPublicKey ?? null,
   });
 }
 
@@ -115,13 +131,19 @@ export async function checkForUpdate(): Promise<UpdateInfo | NoUpdate> {
 /**
  * Download a bundle to local device storage.
  * Native side streams the file, verifies SHA-256, and stores it.
+ *
+ * When `options` contains `patchUrl` / `patchHash` / `fromHash` (from the
+ * checkForUpdate response), the native layer will download only the delta
+ * patch and apply it over the current bundle — saving bandwidth.
  */
 export function downloadBundle(
   bundleId: string,
   downloadUrl: string,
   expectedHash: string,
-): Promise<{ bundlePath: string; hash: string }> {
-  return OtaSdk.downloadBundle(bundleId, downloadUrl, expectedHash);
+  options?: { patchUrl?: string; patchHash?: string; fromHash?: string; signature?: string },
+): Promise<{ bundlePath: string; hash: string; delta: boolean }> {
+  assertNative();
+  return OtaSdk.downloadBundle(bundleId, downloadUrl, expectedHash, options ?? null);
 }
 
 /**
@@ -191,7 +213,13 @@ export async function checkAndApply(options?: {
     : null;
 
   try {
-    await downloadBundle(result.bundleId, result.downloadUrl, result.hash);
+    // Pass delta + signature options — native verifies signature and uses patch if applicable
+    await downloadBundle(result.bundleId, result.downloadUrl, result.hash, {
+      patchUrl:  result.patchUrl,
+      patchHash: result.patchHash,
+      fromHash:  result.fromHash,
+      signature: result.signature,
+    });
     await applyPendingBundle();
     if (result.mandatory) {
       // Native will reload the JS bundle on next resume
