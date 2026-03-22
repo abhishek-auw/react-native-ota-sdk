@@ -8,7 +8,7 @@ import java.io.File
  * Manages bundle storage and switching on Android.
  *
  * Bundle lifecycle:
- *  downloaded → verified → stored as pending → applied on restart → marked active
+ *  downloaded → verified → stored as pending → applied  on restart → marked active
  *
  * Storage locations (app-private, no permissions needed):
  *   /data/data/<packageName>/files/ota/bundles/<hash>/index.android.bundle
