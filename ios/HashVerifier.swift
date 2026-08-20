@@ -28,6 +28,16 @@ enum HashVerifier {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
+    /// Compute SHA-256 of in-memory data and return a hex string.
+    /// Used to verify each file reconstructed from a delta patch.
+    static func sha256Hex(_ data: Data) -> String {
+        var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+        data.withUnsafeBytes { ptr in
+            _ = CC_SHA256(ptr.baseAddress, CC_LONG(data.count), &digest)
+        }
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
     /// Verify a file's hash using constant-time comparison.
     static func verifyFile(at url: URL, expectedHash: String) -> Bool {
         guard !expectedHash.isEmpty else { return false }

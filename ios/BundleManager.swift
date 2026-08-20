@@ -7,6 +7,12 @@ import ZIPFoundation
 ///   <Documents>/ota/bundles/<hash>/main.jsbundle
 class BundleManager {
 
+    /// Delta patch format this SDK understands. Must match
+    /// DELTA_MANIFEST_VERSION in packages/backend/src/services/DeltaService.ts.
+    /// A mismatch makes the patch fail cleanly and the caller fall back to a
+    /// full download.
+    static let deltaManifestVersion = 2
+
     private let prefs: OTAPrefs
 
     private var otaRoot: URL {
@@ -51,11 +57,16 @@ class BundleManager {
 
     /// Apply a delta patch ZIP on top of an existing bundle directory.
     ///
-    /// Steps:
-    ///  1. Copy base bundle dir (fromHash) → new dir (toHash)
-    ///  2. Extract patch ZIP over it (ZIPFoundation overwrites changed files)
-    ///  3. Delete files from `_delta_manifest.json`
-    ///  4. Record the result as pending
+    /// The patch ZIP (produced by DeltaService on the server) contains:
+    /// - `_delta_manifest.json` — version, per-file entries and deletions
+    /// - `bin/<n>` — bsdiff patches, applied against the base file
+    /// - `raw/<n>` — whole replacement files
+    ///
+    /// Most changed files arrive as bsdiff patches, so a one-line JS edit in a
+    /// multi-megabyte bundle is a few kilobytes on the wire.
+    ///
+    /// Throws on any inconsistency; the caller discards the partial result and
+    /// falls back to downloading the full bundle.
     func applyDeltaPatch(patchZipURL: URL, fromHash: String, toHash: String, bundleId: String) throws -> String {
         let fm = FileManager.default
         let baseBundleDir = otaRoot.appendingPathComponent(fromHash)
@@ -65,40 +76,151 @@ class BundleManager {
         }
 
         let targetDir = otaRoot.appendingPathComponent(toHash)
-        try fm.createDirectory(at: targetDir, withIntermediateDirectories: true)
+        let scratchDir = otaRoot.appendingPathComponent("patch-\(toHash)")
 
-        // 1. Seed target with all files from base
-        let baseContents = try fm.contentsOfDirectory(at: baseBundleDir, includingPropertiesForKeys: nil)
-        for item in baseContents {
-            let dest = targetDir.appendingPathComponent(item.lastPathComponent)
-            if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
-            try fm.copyItem(at: item, to: dest)
+        do {
+            try fm.createDirectory(at: targetDir, withIntermediateDirectories: true)
+            try fm.createDirectory(at: scratchDir, withIntermediateDirectories: true)
+
+            // 1. Seed target with all files from base
+            let baseContents = try fm.contentsOfDirectory(at: baseBundleDir, includingPropertiesForKeys: nil)
+            for item in baseContents {
+                let dest = targetDir.appendingPathComponent(item.lastPathComponent)
+                if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
+                try fm.copyItem(at: item, to: dest)
+            }
+
+            // 2. Unpack the patch somewhere separate — its entry names
+            //    (bin/0, raw/1) are not bundle paths and must not land in the
+            //    bundle directory.
+            try fm.unzipItem(at: patchZipURL, to: scratchDir)
+            try? fm.removeItem(at: patchZipURL)
+
+            let manifestURL = scratchDir.appendingPathComponent("_delta_manifest.json")
+            guard fm.fileExists(atPath: manifestURL.path),
+                  let manifestData = try? Data(contentsOf: manifestURL),
+                  let manifest = try JSONSerialization.jsonObject(with: manifestData) as? [String: Any] else {
+                throw NSError(domain: "OTABundleManager", code: 4,
+                              userInfo: [NSLocalizedDescriptionKey: "Patch is missing or has an unreadable _delta_manifest.json"])
+            }
+
+            let version = manifest["version"] as? Int ?? 1
+            guard version == BundleManager.deltaManifestVersion else {
+                throw NSError(domain: "OTABundleManager", code: 5,
+                              userInfo: [NSLocalizedDescriptionKey:
+                                "Unsupported delta manifest version \(version) (this SDK understands \(BundleManager.deltaManifestVersion))"])
+            }
+
+            // 3. Reconstruct every changed file
+            if let files = manifest["files"] as? [[String: Any]] {
+                for entry in files {
+                    try applyDeltaFile(entry: entry,
+                                       baseDir: baseBundleDir,
+                                       scratchDir: scratchDir,
+                                       targetDir: targetDir)
+                }
+            }
+
+            // 4. Deletions
+            if let deleted = manifest["deleted"] as? [String] {
+                for relativePath in deleted {
+                    let victim = try safeChild(of: targetDir, relativePath: relativePath)
+                    if fm.fileExists(atPath: victim.path) {
+                        try? fm.removeItem(at: victim)
+                        NSLog("[OTA] Delta: deleted %@", relativePath)
+                    }
+                }
+            }
+
+            // 5. Find JS bundle
+            guard let bundleFile = findBundleFile(in: targetDir) else {
+                throw NSError(domain: "OTABundleManager", code: 3,
+                              userInfo: [NSLocalizedDescriptionKey: "No JS bundle after patching to \(toHash)"])
+            }
+
+            try? fm.removeItem(at: scratchDir)
+
+            let bundlePath = bundleFile.path
+            prefs.pendingBundlePath = bundlePath
+            prefs.pendingBundleHash = toHash
+            prefs.pendingBundleId   = bundleId
+
+            NSLog("[OTA] Delta applied: %@ (from=%@ to=%@)", bundlePath, fromHash, toHash)
+            return bundlePath
+        } catch {
+            // Leave nothing half-patched behind for the next attempt to trip on.
+            try? fm.removeItem(at: targetDir)
+            try? fm.removeItem(at: scratchDir)
+            throw error
+        }
+    }
+
+    /// Reconstruct one file described by a manifest entry.
+    private func applyDeltaFile(entry: [String: Any],
+                                baseDir: URL,
+                                scratchDir: URL,
+                                targetDir: URL) throws {
+        guard let path = entry["path"] as? String,
+              let mode = entry["mode"] as? String,
+              let entryName = entry["entry"] as? String,
+              let expectedSize = entry["newSize"] as? Int,
+              let expectedSha = entry["newSha256"] as? String else {
+            throw NSError(domain: "OTABundleManager", code: 6,
+                          userInfo: [NSLocalizedDescriptionKey: "Malformed delta manifest entry"])
         }
 
-        // 2. Overlay patch (changed + added files)
-        try fm.unzipItem(at: patchZipURL, to: targetDir)
-        try? fm.removeItem(at: patchZipURL)
-
-        // 3. Apply deletions from manifest
-        let manifestURL = targetDir.appendingPathComponent("_delta_manifest.json")
-        if fm.fileExists(atPath: manifestURL.path) {
-            applyDeltaDeletions(manifestURL: manifestURL, bundleDir: targetDir)
-            try? fm.removeItem(at: manifestURL)
+        let payloadURL = try safeChild(of: scratchDir, relativePath: entryName)
+        guard let payload = try? Data(contentsOf: payloadURL) else {
+            throw NSError(domain: "OTABundleManager", code: 7,
+                          userInfo: [NSLocalizedDescriptionKey: "Patch entry \"\(entryName)\" missing for \(path)"])
         }
 
-        // 4. Find JS bundle
-        guard let bundleFile = findBundleFile(in: targetDir) else {
-            throw NSError(domain: "OTABundleManager", code: 3,
-                          userInfo: [NSLocalizedDescriptionKey: "No JS bundle after patching to \(toHash)"])
+        let reconstructed: Data
+        switch mode {
+        case "bsdiff":
+            let baseURL = try safeChild(of: baseDir, relativePath: path)
+            guard let baseData = try? Data(contentsOf: baseURL) else {
+                throw NSError(domain: "OTABundleManager", code: 8,
+                              userInfo: [NSLocalizedDescriptionKey:
+                                "Base bundle is missing \"\(path)\", required by a bsdiff entry"])
+            }
+            reconstructed = try BsPatch.apply(oldData: baseData, patchData: payload)
+        case "raw":
+            reconstructed = payload
+        default:
+            throw NSError(domain: "OTABundleManager", code: 9,
+                          userInfo: [NSLocalizedDescriptionKey: "Unknown delta mode \"\(mode)\" for \(path)"])
         }
 
-        let bundlePath = bundleFile.path
-        prefs.pendingBundlePath = bundlePath
-        prefs.pendingBundleHash = toHash
-        prefs.pendingBundleId   = bundleId
+        guard reconstructed.count == expectedSize else {
+            throw NSError(domain: "OTABundleManager", code: 10,
+                          userInfo: [NSLocalizedDescriptionKey:
+                            "Reconstructed \"\(path)\" is \(reconstructed.count) bytes, expected \(expectedSize)"])
+        }
 
-        NSLog("[OTA] Delta applied: %@ (from=%@ to=%@)", bundlePath, fromHash, toHash)
-        return bundlePath
+        guard HashVerifier.sha256Hex(reconstructed).caseInsensitiveCompare(expectedSha) == .orderedSame else {
+            throw NSError(domain: "OTABundleManager", code: 11,
+                          userInfo: [NSLocalizedDescriptionKey: "Reconstructed \"\(path)\" failed its hash check"])
+        }
+
+        let destination = try safeChild(of: targetDir, relativePath: path)
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try reconstructed.write(to: destination)
+    }
+
+    /// Resolve a relative path inside `parent`, refusing anything that escapes it.
+    /// A manifest is server-supplied data, so "../.." has to be treated as
+    /// hostile even though we generated it.
+    private func safeChild(of parent: URL, relativePath: String) throws -> URL {
+        let child = parent.appendingPathComponent(relativePath).standardizedFileURL
+        let root = parent.standardizedFileURL
+        guard child.path == root.path || child.path.hasPrefix(root.path + "/") else {
+            throw NSError(domain: "OTABundleManager", code: 12,
+                          userInfo: [NSLocalizedDescriptionKey:
+                            "Path traversal detected in delta manifest: \(relativePath)"])
+        }
+        return child
     }
 
     /// Promote pending → active.
@@ -157,20 +279,5 @@ class BundleManager {
             }
         }
         return nil
-    }
-
-    /// Parse `_delta_manifest.json` and delete any files under "deleted".
-    private func applyDeltaDeletions(manifestURL: URL, bundleDir: URL) {
-        guard let data = try? Data(contentsOf: manifestURL),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let deleted = json["deleted"] as? [String] else { return }
-
-        for relativePath in deleted {
-            let target = bundleDir.appendingPathComponent(relativePath)
-            if FileManager.default.fileExists(atPath: target.path) {
-                try? FileManager.default.removeItem(at: target)
-                NSLog("[OTA] Delta: deleted %@", relativePath)
-            }
-        }
     }
 }
