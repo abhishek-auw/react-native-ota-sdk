@@ -76,4 +76,11 @@ dependencies {
   implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"
 
   // ZIP extraction uses java.util.zip (standard JDK) — no extra dep needed
+
+  // ── Unit tests ────────────────────────────────────────────────────
+  // These were missing entirely, so `./gradlew test` could not compile the
+  // test source set at all — the existing tests had never been run.
+  testImplementation "junit:junit:4.13.2"
+  testImplementation "io.mockk:mockk:1.13.10"
+  testImplementation "com.squareup.okhttp3:mockwebserver:4.12.0"
 }

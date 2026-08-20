@@ -1,0 +1,38 @@
+{
+  "bundle": {
+    "old": "bundle.old",
+    "new": "bundle.new",
+    "patch": "bundle.patch",
+    "newSize": 177505
+  },
+  "emptyOld": {
+    "old": "emptyOld.old",
+    "new": "emptyOld.new",
+    "patch": "emptyOld.patch",
+    "newSize": 22
+  },
+  "emptyNew": {
+    "old": "emptyNew.old",
+    "new": "emptyNew.new",
+    "patch": "emptyNew.patch",
+    "newSize": 0
+  },
+  "identical": {
+    "old": "identical.old",
+    "new": "identical.new",
+    "patch": "identical.patch",
+    "newSize": 900
+  },
+  "highBytes": {
+    "old": "highBytes.old",
+    "new": "highBytes.new",
+    "patch": "highBytes.patch",
+    "newSize": 1000
+  },
+  "negativeSeek": {
+    "old": "negativeSeek.old",
+    "new": "negativeSeek.new",
+    "patch": "negativeSeek.patch",
+    "newSize": 1600
+  }
+}

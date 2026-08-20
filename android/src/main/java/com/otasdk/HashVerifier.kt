@@ -31,6 +31,15 @@ object HashVerifier {
     }
 
     /**
+     * Compute SHA-256 of an in-memory byte array and return a hex string.
+     * Used to verify each file reconstructed from a delta patch.
+     */
+    fun sha256Hex(data: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        return digest.digest(data).joinToString("") { "%02x".format(it) }
+    }
+
+    /**
      * Verify that a file's hash matches the expected value.
      * Uses a constant-time comparison to prevent timing attacks.
      */
