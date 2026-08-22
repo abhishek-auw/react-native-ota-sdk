@@ -1,0 +1,70 @@
+// Stamps the native fingerprint into the binary at build time.
+//
+// Apply from android/app/build.gradle, above the `android { }` block:
+//
+//     apply from: "../../node_modules/react-native-ota-sdk/scripts/ota-fingerprint.gradle"
+//
+// then reference the placeholder in AndroidManifest.xml:
+//
+//     <meta-data
+//         android:name="com.otasdk.RUNTIME_VERSION"
+//         android:value="${otaRuntimeVersion}" />
+//
+// Using a manifest placeholder rather than writing the value into the file
+// matters: the fingerprint hashes the native project, so a literal value in a
+// hashed file would feed its own hash back in and never settle. The placeholder
+// keeps the manifest content constant.
+//
+// The same `ota fingerprint` command runs at publish time, over the same source
+// tree, so the binary and the bundle agree by construction rather than because
+// someone kept two values in step.
+
+import java.io.ByteArrayOutputStream
+
+ext.computeOtaFingerprint = {
+    // Project root: android/app -> android -> project
+    def projectRoot = rootProject.projectDir.parentFile
+
+    try {
+        def stdout = new ByteArrayOutputStream()
+        def stderr = new ByteArrayOutputStream()
+
+        def result = exec {
+            workingDir projectRoot
+            commandLine "npx", "ota", "fingerprint", "--project", projectRoot.absolutePath
+            standardOutput = stdout
+            errorOutput = stderr
+            ignoreExitValue = true
+        }
+
+        def value = stdout.toString().trim()
+
+        if (result.exitValue != 0 || !(value ==~ /^[0-9a-f]{16}$/)) {
+            throw new GradleException(
+                "ota fingerprint failed (exit ${result.exitValue}).\n" +
+                "stdout: ${value}\nstderr: ${stderr.toString().trim()}"
+            )
+        }
+
+        logger.lifecycle("OTA runtime fingerprint: ${value}")
+        return value
+
+    } catch (Exception e) {
+        // Failing loudly is deliberate. A build that silently fell back to a
+        // placeholder would produce a binary declaring a runtime nothing is
+        // published to, and the app would simply never receive updates — with
+        // no error anywhere to explain why.
+        throw new GradleException(
+            "Could not compute the OTA runtime fingerprint.\n" +
+            "Check that the ota CLI is installed and runnable from the project root.\n" +
+            "Cause: ${e.message}"
+        )
+    }
+}
+
+android {
+    defaultConfig {
+        manifestPlaceholders = (manifestPlaceholders ?: [:]) +
+            [otaRuntimeVersion: computeOtaFingerprint()]
+    }
+}

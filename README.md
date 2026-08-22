@@ -157,6 +157,47 @@ the token lived in JavaScript, an OTA update could raise its own runtime and
 pull in bundles built for a native contract the installed binary lacks — which
 is the exact failure the token exists to prevent.
 
+##### Or let the build compute it
+
+Managing the value by hand means the guarantee is only as good as someone
+remembering to bump it after `npm install react-native-svg`. Two scripts ship
+with this package to derive it instead, from a hash of the native project —
+native dependency versions, the React Native version, and the contents of
+`android/` and `ios/`.
+
+**Android** — in `android/app/build.gradle`, above the `android { }` block:
+
+```groovy
+apply from: "../../node_modules/react-native-ota-sdk/scripts/ota-fingerprint.gradle"
+```
+
+then use the placeholder instead of a literal value:
+
+```xml
+<meta-data
+    android:name="com.otasdk.RUNTIME_VERSION"
+    android:value="${otaRuntimeVersion}" />
+```
+
+**iOS** — add a Run Script build phase, positioned *after* Copy Bundle
+Resources:
+
+```sh
+"$SRCROOT/../node_modules/react-native-ota-sdk/scripts/ota-fingerprint-ios.sh"
+```
+
+Leave `OTARuntimeVersion` out of your source `Info.plist`; the script writes it
+into the built one.
+
+`ota deploy` computes the same fingerprint over the same source tree, so the
+binary and the bundle agree by construction rather than by anyone keeping two
+values in step. Install a native package and the fingerprint moves on its own;
+a bundle published afterwards cannot reach a binary built before it.
+
+Both scripts fail the build rather than falling back to a default. A binary
+declaring a runtime nothing publishes to would simply never receive updates,
+with nothing anywhere to explain why.
+
 #### Verifying the hook runs
 
 `getJSBundleFile` logs on every call, so you can confirm it without adding
