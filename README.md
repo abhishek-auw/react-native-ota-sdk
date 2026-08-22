@@ -664,6 +664,21 @@ The server is presigning download URLs against its own address. Set
 `S3_PUBLIC_ENDPOINT` to something the device can reach, or use
 `adb reverse tcp:9000 tcp:9000` so `localhost` on the device means your machine.
 
+**Cold start got much slower after the first OTA update**
+The bundle was shipped as plain JavaScript while your APK contains Hermes
+bytecode. Hermes then parses and compiles the whole bundle on *every* cold
+start, and that work is not cached — seconds on a large app. Build with a CLI
+that runs `hermesc`; `ota deploy` does this by default. Confirm by checking the
+first four bytes of the bundle on the device:
+
+```bash
+adb shell run-as <your.package> \
+  head -c 4 files/ota/bundles/<hash>/index.android.bundle | xxd
+```
+
+`c6 1f bc 03` is bytecode. Anything else — usually `var ` or `//` — is plain
+JavaScript, and that is your regression.
+
 **A good bundle keeps rolling back**
 `markStable()` is not being reached — often because it sits behind a screen the
 user has not opened, or the app crashes before it. Move it earlier.
