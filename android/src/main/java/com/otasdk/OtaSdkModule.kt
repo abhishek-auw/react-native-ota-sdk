@@ -49,7 +49,11 @@ class OtaSdkModule(reactContext: ReactApplicationContext) :
     fun configure(configMap: ReadableMap) {
         config = OTAConfig(
             appId      = configMap.getString("appId") ?: "",
-            serverUrl  = configMap.getString("serverUrl") ?: "",
+            // Trailing slashes are stripped here rather than at each call site.
+            // "https://ota.example.com/" would otherwise build
+            // "https://ota.example.com//v1/update/check", which the server
+            // treats as a different route and answers with a 404.
+            serverUrl  = (configMap.getString("serverUrl") ?: "").trimEnd('/'),
             channel    = configMap.getString("channel") ?: "production",
             crashThreshold = if (configMap.hasKey("crashThreshold"))
                 configMap.getInt("crashThreshold") else 3,

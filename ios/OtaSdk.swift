@@ -27,7 +27,12 @@ class OtaSdk: RCTEventEmitter {
     @objc func configure(_ configDict: NSDictionary) {
         config = OTAConfig(
             appId:            configDict["appId"]          as? String ?? "",
-            serverUrl:        configDict["serverUrl"]       as? String ?? "",
+            // Trailing slashes are stripped here rather than at each call site.
+            // "https://ota.example.com/" would otherwise build
+            // "https://ota.example.com//v1/update/check", which the server
+            // treats as a different route and answers with a 404.
+            serverUrl:        (configDict["serverUrl"] as? String ?? "")
+                                .replacingOccurrences(of: "/+$", with: "", options: .regularExpression),
             channel:          configDict["channel"]         as? String ?? "production",
             crashThreshold:   configDict["crashThreshold"]  as? Int    ?? 3,
             signingPublicKey: configDict["signingPublicKey"] as? String

@@ -1,31 +1,77 @@
 package com.otasdk
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
+import android.util.Log
 
 /**
  * Public entry-point for host apps that need to integrate OTA bundle loading
- * into their MainApplication before React Native starts.
+ * before React Native starts.
  *
- * Usage in MainApplication.kt:
+ * New Architecture (bridgeless, the default since React Native 0.76) —
+ * MainApplication.kt:
  *
- *   import com.otasdk.OtaSdkHelper
- *
- *   object : DefaultReactNativeHost(this) {
- *       override fun getJSBundleFile(): String? =
- *           OtaSdkHelper.getActiveBundlePath(applicationContext)
+ *   override val reactHost: ReactHost by lazy {
+ *       getDefaultReactHost(
+ *           context = applicationContext,
+ *           packageList = PackageList(this).packages,
+ *           jsBundleFilePath = OtaSdkHelper.getJSBundleFile(applicationContext),
+ *       )
  *   }
+ *
+ * Old Architecture (bridge):
+ *
+ *   override fun getJSBundleFile(): String? =
+ *       OtaSdkHelper.getJSBundleFile(applicationContext)
+ *
+ * Note that in bridgeless mode `reactNativeHost` is never consulted for bundle
+ * loading — overriding getJSBundleFile() there has no effect at all, silently.
  */
 object OtaSdkHelper {
 
+    private const val TAG = "OTA-Host"
+
     /**
-     * Returns the path to the active OTA JS bundle, or null if no OTA bundle
-     * has been applied yet (React Native will fall back to the bundled asset).
+     * The JS bundle React Native should load, or null to fall back to the
+     * bundle packaged in the APK.
      *
-     * Also promotes any pending bundle (one that was downloaded and
-     * applyPendingBundle() was called for) to active before React starts,
-     * so the very next launch after an update loads the new bundle.
+     * Returns null on debuggable builds so Metro keeps working during
+     * development — an OTA bundle would otherwise fight the dev server. The
+     * check reads FLAG_DEBUGGABLE from the host app rather than a BuildConfig,
+     * since a library cannot see the app's own BuildConfig. Pass
+     * `enableInDebuggableBuilds = true` to exercise the OTA path in a
+     * debuggable build (Metro must not be running).
      *
-     * Call this from getJSBundleFile() in your ReactNativeHost override.
+     * Also promotes a pending bundle — one that was downloaded and had
+     * applyPendingBundle() called for it — to active before React Native
+     * starts, which is what makes an update take effect on the next launch.
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun getJSBundleFile(
+        context: Context,
+        enableInDebuggableBuilds: Boolean = false,
+    ): String? {
+        val appContext = context.applicationContext
+        val debuggable =
+            (appContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
+        if (debuggable && !enableInDebuggableBuilds) {
+            Log.i(TAG, "debuggable build — using Metro or the packaged bundle, OTA skipped")
+            return null
+        }
+
+        val path = getActiveBundlePath(appContext)
+        // Logged deliberately, at a level that survives a normal release build.
+        // A silent null here is indistinguishable from the hook never being
+        // called, which is a genuinely painful thing to debug.
+        Log.i(TAG, if (path != null) "loading OTA bundle: $path" else "no OTA bundle yet — using the packaged bundle")
+        return path
+    }
+
+    /**
+     * Lower-level variant: returns the active OTA bundle path with no build-type
+     * check, promoting any pending bundle first. Prefer [getJSBundleFile].
      */
     @JvmStatic
     fun getActiveBundlePath(context: Context): String? {
