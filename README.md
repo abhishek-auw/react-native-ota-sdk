@@ -71,38 +71,117 @@ OTA bundle.
 
 ### Android — `MainApplication.kt`
 
+**Which of the two below you need depends on your architecture.** Getting this
+wrong is silent: updates download, verify and apply correctly, and React Native
+carries on running the bundle from your APK.
+
+#### New Architecture (bridgeless) — the default since React Native 0.76
+
+If your `MainApplication` calls `loadReactNative(this)` and overrides
+`reactHost`, this is you. In bridgeless mode React Native loads JS through
+`ReactHost`, and **`reactNativeHost` is never consulted** — a `getJSBundleFile()`
+override there is dead code. Pass the path to `getDefaultReactHost` instead:
+
 ```kotlin
+import com.facebook.react.ReactHost
+import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
 import com.otasdk.OtaSdkHelper
 
 class MainApplication : Application(), ReactApplication {
-
-  override val reactNativeHost: ReactNativeHost =
-    object : DefaultReactNativeHost(this) {
-
-      // ── Add this ──────────────────────────────────────────────
-      override fun getJSBundleFile(): String? =
-        OtaSdkHelper.getActiveBundlePath(applicationContext)
-      // ──────────────────────────────────────────────────────────
-
-      override fun getPackages(): List<ReactPackage> =
-        PackageList(this).packages
-
-      override fun getJSMainModuleName(): String = "index"
-
-      override fun getUseDeveloperSupport(): Boolean = BuildConfig.DEBUG
-    }
+  override val reactHost: ReactHost by lazy {
+    getDefaultReactHost(
+      context = applicationContext,
+      packageList = PackageList(this).packages,
+      jsBundleFilePath = OtaSdkHelper.getJSBundleFile(applicationContext),
+    )
+  }
 }
 ```
 
-Returning `null` is the normal case before any update has been applied — React
-Native falls back to the bundle in your APK.
+`getJSBundleFile` returns null when there is no OTA bundle yet, and
+`getDefaultReactHost` then falls back to `assets://index.android.bundle`. It
+also returns null on debuggable builds so Metro keeps working — it reads
+`FLAG_DEBUGGABLE` from your app, so you do not need a `BuildConfig.DEBUG` check
+of your own. To exercise OTA in a debuggable build, pass
+`enableInDebuggableBuilds = true` and make sure Metro is not running.
+
+> **Keep the call inside the `by lazy` block.** Hoisting it into a property —
+> `val otaPath = OtaSdkHelper.getJSBundleFile(applicationContext)` — makes it run
+> in the `Application` constructor, where `applicationContext` is still null
+> because `attachBaseContext()` has not been called yet. The app then dies at
+> startup with `NullPointerException ... getApplicationContext()` on a null
+> reference. `by lazy` defers evaluation until first access, which is safely
+> after the context exists.
+
+#### Old Architecture (bridge)
+
+If you have no `reactHost` override and rely on `reactNativeHost`:
+
+```kotlin
+import com.otasdk.OtaSdkHelper
+
+override val reactNativeHost: ReactNativeHost =
+  object : DefaultReactNativeHost(this) {
+
+    // ── Add this ──────────────────────────────────────────────
+    override fun getJSBundleFile(): String? =
+      OtaSdkHelper.getJSBundleFile(applicationContext)
+    // ──────────────────────────────────────────────────────────
+
+    override fun getPackages(): List<ReactPackage> = PackageList(this).packages
+    override fun getJSMainModuleName(): String = "index"
+    override fun getUseDeveloperSupport(): Boolean = BuildConfig.DEBUG
+  }
+```
+
+#### Declare a runtime version
+
+**Also required.** The runtime version is the JS-to-native compatibility token.
+The server serves a bundle only to binaries declaring exactly the same value, so
+JavaScript built against a native contract this binary does not have can never
+reach it.
+
+`android/app/src/main/AndroidManifest.xml`, inside `<application>`:
+
+```xml
+<meta-data android:name="com.otasdk.RUNTIME_VERSION" android:value="1" />
+```
+
+Start at `1` and leave it alone. **Bump it only when the JS-to-native contract
+breaks** — a native module added or removed, a bridge signature changed, a React
+Native upgrade. A native release with no bridge changes keeps the same value and
+inherits every bundle already published for it.
+
+It is read from the manifest rather than passed to `configure()` on purpose. If
+the token lived in JavaScript, an OTA update could raise its own runtime and
+pull in bundles built for a native contract the installed binary lacks — which
+is the exact failure the token exists to prevent.
+
+#### Verifying the hook runs
+
+`getJSBundleFile` logs on every call, so you can confirm it without adding
+anything:
+
+```bash
+adb logcat -s OTA-Host:I
+```
+
+| Output | Meaning |
+|---|---|
+| `loading OTA bundle: /data/...` | Working — React Native is loading your update |
+| `no OTA bundle yet — using the packaged bundle` | Hook runs, nothing downloaded and applied yet |
+| `debuggable build — ... OTA skipped` | Expected on debug builds; use a release build |
+| *nothing at all* | The hook is never called — most often `reactNativeHost` wired up in a bridgeless app |
 
 ### iOS — `AppDelegate.swift`
+
+On React Native 0.74 and later, `AppDelegate` subclasses `RCTAppDelegate` and
+you override `bundleURL()`:
 
 ```swift
 import OtaSdk
 
-func sourceURL(for bridge: RCTBridge!) -> URL! {
+override func bundleURL() -> URL? {
   #if DEBUG
     return RCTBundleURLProvider.sharedSettings()
       .jsBundleURL(forBundleRoot: "index")
@@ -111,6 +190,16 @@ func sourceURL(for bridge: RCTBridge!) -> URL! {
       ?? Bundle.main.url(forResource: "main", withExtension: "jsbundle")
   #endif
 }
+```
+
+On older versions the equivalent hook is `sourceURL(for bridge:)` on your
+`RCTBridgeDelegate`, with the same body.
+
+Declare the runtime version in `Info.plist`, matching the Android value:
+
+```xml
+<key>OTARuntimeVersion</key>
+<string>1</string>
 ```
 
 Both helpers also promote a pending bundle to active, which is what makes an
@@ -405,6 +494,84 @@ mismatch aborts the update and leaves the current bundle untouched.
 If anything about the patch fails, the SDK falls back to nothing — it does not
 silently install a partially-correct bundle.
 
+A device only receives a patch when it is running the bundle **immediately
+before** the new one. The server computes exactly one patch per upload, against
+the newest active bundle for that app, channel and platform, and offers it only
+when the device's current hash matches the hash the patch was built from. A
+fresh install, or a device two or more versions behind, downloads the full
+bundle. Patches are not chained.
+
+---
+
+## Testing
+
+### Use a release build
+
+OTA cannot be tested against Metro. On a debug build React Native loads
+JavaScript from the dev server, and the SDK deliberately returns null from
+`getJSBundleFile` so it does not fight it. Updates will download, verify and
+apply perfectly, and nothing on screen will change.
+
+```sh
+cd android && ./gradlew installRelease
+```
+
+Then confirm the host hook is actually running:
+
+```sh
+adb logcat -s OTA-Host:I
+# loading OTA bundle: /data/user/0/<pkg>/files/ota/bundles/<hash>/index.android.bundle
+```
+
+Silence here means the hook is never called — see [Native setup](#native-setup).
+
+### Verifying a delta download
+
+Delta needs two uploads in order, because the first one has nothing to diff
+against.
+
+**1. Get the device onto bundle A.** Build and upload any bundle, let the device
+download it, then fully restart the app:
+
+```sh
+adb shell am force-stop <your.package.name>
+```
+
+This first download is always full — the device sent an empty
+`currentBundleHash`, so no patch was possible.
+
+**2. Upload bundle B.** Change a line, rebuild, upload. The server logs:
+
+```
+[BundleService] Delta computed: 99.2% smaller (full=7200KB, patch=58KB)
+```
+
+If that line is missing, no patch was created and nothing downstream will use
+one.
+
+**3. Watch the device take the patch path:**
+
+```sh
+adb logcat -s OTA-SDK:D -s OTA-BundleManager:D
+# Using delta download for <bundleId> (from=<hashA>)
+# Delta applied: /data/.../files/ota/bundles/<hashB>/index.android.bundle
+```
+
+The reconstructed bundle's hash matching the server's hash is proof the patch
+rebuilt the file byte for byte.
+
+**4. Or assert it in JavaScript**, which survives release-build log stripping:
+
+```js
+onOTAEvent((e) => {
+  if (e.type === 'download_complete') console.log('delta used:', e.delta);
+});
+```
+
+Common reasons a delta does not happen: uploading B before the device has
+applied A, a channel or platform mismatch between the two uploads, or a version
+range on either bundle that excludes the device.
+
 ---
 
 ## Publishing bundles
@@ -427,13 +594,34 @@ CLI, the REST API and CI pipeline templates.
 Autolinking has not run. `cd ios && pod install` for iOS; rebuild the app for
 Android. A Metro reload is not enough — this is a native module.
 
-**Updates download but never appear**
-The [native setup](#native-setup) step is missing. Confirm your
-`getJSBundleFile()` / `sourceURL(for:)` override is actually being called.
+**Updates download, verify and apply — but nothing changes on screen**
+The download path and the load path are independent, so every log can say
+success while React Native carries on running the bundle from your binary.
+Check `adb logcat -s OTA-Host:I`. Three causes, in order of likelihood:
 
-**Everything works in release but not in debug (iOS)**
-Expected. The debug branch loads from Metro, so OTA bundles are ignored. Test OTA
-in a release build.
+1. You are on a debug build. Metro serves the JS and OTA is skipped by design.
+   Build release.
+2. You wired `reactNativeHost` in a New Architecture app. If your
+   `MainApplication` calls `loadReactNative(this)` and overrides `reactHost`,
+   then `getJSBundleFile()` on `reactNativeHost` is dead code — the path has to
+   go to `getDefaultReactHost(jsBundleFilePath = ...)`. Nothing warns about
+   this; the override simply never runs.
+3. The hook is missing entirely.
+
+**App crashes at startup with `getApplicationContext()` on a null reference**
+`OtaSdkHelper.getJSBundleFile(applicationContext)` is being called from a
+property initializer, which runs in the `Application` constructor before
+`attachBaseContext()`. Keep the call inside the `by lazy` block.
+
+**Server returns 404 for `POST://v1/update/check`**
+Note the double slash. Older versions of this SDK concatenated `serverUrl`
+without normalising, so a trailing slash produced `//v1/...`. Update the SDK, or
+drop the trailing slash from `serverUrl`.
+
+**Device downloads but the URL points at `localhost`**
+The server is presigning download URLs against its own address. Set
+`S3_PUBLIC_ENDPOINT` to something the device can reach, or use
+`adb reverse tcp:9000 tcp:9000` so `localhost` on the device means your machine.
 
 **A good bundle keeps rolling back**
 `markStable()` is not being reached — often because it sits behind a screen the
@@ -442,6 +630,13 @@ user has not opened, or the app crashes before it. Move it earlier.
 **`checkForUpdate()` rejects with `NOT_CONFIGURED`**
 `configure()` has not run yet. If you are using `OTAProvider`, make sure nothing
 calls the SDK before it mounts.
+
+**Update check returns nothing, server says `runtime_version_mismatch`**
+The binary declares a runtime version that has no bundles published for it.
+Check what the device reports with `getStatus().runtimeVersion` and compare it
+against the runtime on the bundle. Usually either the manifest/plist value was
+never added (it defaults to `"1"` and logs a warning), or a bundle was uploaded
+with the wrong runtime.
 
 **Update check returns nothing when a bundle exists**
 The device is outside the bundle's version range, on a different channel, outside

@@ -8,6 +8,19 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
+ * Reads an optional string, treating an explicit JSON null as absent.
+ *
+ * `JSONObject.optString` returns the *string* "null" when the value is
+ * JSON null, because it stringifies JSONObject.NULL. So a response containing
+ * `"signature": null` produced the four characters n-u-l-l, which then sailed
+ * past every `isNullOrBlank()` guard downstream and got handed to the ECDSA
+ * verifier as if it were a real signature — failing with "bundle may be
+ * tampered" instead of correctly treating the bundle as unsigned.
+ */
+private fun JSONObject.optStringOrNull(name: String): String? =
+    if (isNull(name)) null else optString(name).ifEmpty { null }
+
+/**
  * Thin HTTP client for OTA backend API calls.
  * Runs on a background thread — never call from main thread.
  */
@@ -46,6 +59,7 @@ class OTAApiClient {
         appId: String,
         platform: String,
         appVersion: String,
+        runtimeVersion: String,
         currentHash: String,
         channel: String,
         deviceHash: String,
@@ -54,6 +68,7 @@ class OTAApiClient {
             put("appId",             appId)
             put("platform",          platform)
             put("appVersion",        appVersion)
+            put("runtimeVersion",    runtimeVersion)
             put("currentBundleHash", currentHash)
             put("channel",           channel)
             put("deviceHash",        deviceHash)
@@ -84,11 +99,11 @@ class OTAApiClient {
                 downloadUrl  = json.getString("downloadUrl"),
                 hash         = json.getString("hash"),
                 mandatory    = json.optBoolean("mandatory", false),
-                releaseNotes = json.optString("releaseNotes").ifEmpty { null },
-                signature    = json.optString("signature").ifEmpty { null },
-                patchUrl     = json.optString("patchUrl").ifEmpty { null },
-                patchHash    = json.optString("patchHash").ifEmpty { null },
-                fromHash     = json.optString("fromHash").ifEmpty { null },
+                releaseNotes = json.optStringOrNull("releaseNotes"),
+                signature    = json.optStringOrNull("signature"),
+                patchUrl     = json.optStringOrNull("patchUrl"),
+                patchHash    = json.optStringOrNull("patchHash"),
+                fromHash     = json.optStringOrNull("fromHash"),
             )
         )
     }

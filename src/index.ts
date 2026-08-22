@@ -84,6 +84,12 @@ export interface SDKStatus {
   hasPending: boolean;
   pendingBundleHash: string;
   crashCount: number;
+  /**
+   * The JS-to-native compatibility token this binary declares, read from
+   * AndroidManifest meta-data or Info.plist. Not settable from JS — see the
+   * README. Useful when the server reports runtime_version_mismatch.
+   */
+  runtimeVersion: string;
 }
 
 export interface DownloadProgressEvent {
@@ -108,7 +114,10 @@ export function configure(config: OTAConfig): void {
   assertNative();
   OtaSdk.configure({
     appId:            config.appId,
-    serverUrl:        config.serverUrl,
+    // Strip trailing slashes. Native builds request URLs by appending
+    // "/v1/...", so "https://ota.example.com/" would produce a double slash —
+    // a path the server does not route, answered with a 404.
+    serverUrl:        config.serverUrl.replace(/\/+$/, ''),
     channel:          config.channel ?? 'production',
     crashThreshold:   config.crashThreshold ?? 3,
     signingPublicKey: config.signingPublicKey ?? null,

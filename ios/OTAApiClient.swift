@@ -38,6 +38,7 @@ class OTAApiClient {
                         appId: String,
                         platform: String,
                         appVersion: String,
+                        runtimeVersion: String,
                         currentHash: String,
                         channel: String,
                         deviceHash: String) throws -> UpdateCheckResult {
@@ -50,6 +51,7 @@ class OTAApiClient {
             "appId":             appId,
             "platform":          platform,
             "appVersion":        appVersion,
+            "runtimeVersion":    runtimeVersion,
             "currentBundleHash": currentHash,
             "channel":           channel,
             "deviceHash":        deviceHash,

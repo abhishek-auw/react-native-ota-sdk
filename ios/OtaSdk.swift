@@ -27,7 +27,12 @@ class OtaSdk: RCTEventEmitter {
     @objc func configure(_ configDict: NSDictionary) {
         config = OTAConfig(
             appId:            configDict["appId"]          as? String ?? "",
-            serverUrl:        configDict["serverUrl"]       as? String ?? "",
+            // Trailing slashes are stripped here rather than at each call site.
+            // "https://ota.example.com/" would otherwise build
+            // "https://ota.example.com//v1/update/check", which the server
+            // treats as a different route and answers with a 404.
+            serverUrl:        (configDict["serverUrl"] as? String ?? "")
+                                .replacingOccurrences(of: "/+$", with: "", options: .regularExpression),
             channel:          configDict["channel"]         as? String ?? "production",
             crashThreshold:   configDict["crashThreshold"]  as? Int    ?? 3,
             signingPublicKey: configDict["signingPublicKey"] as? String
@@ -54,6 +59,7 @@ class OtaSdk: RCTEventEmitter {
             do {
                 let deviceHash  = DeviceInfo.deviceHash()
                 let appVersion  = DeviceInfo.appVersion()
+                let runtimeVer  = DeviceInfo.runtimeVersion()
                 let currentHash = self.prefs.activeBundleHash
 
                 let result = try self.apiClient.checkForUpdate(
@@ -61,6 +67,7 @@ class OtaSdk: RCTEventEmitter {
                     appId:       cfg.appId,
                     platform:    "ios",
                     appVersion:  appVersion,
+                    runtimeVersion: runtimeVer,
                     currentHash: currentHash,
                     channel:     cfg.channel,
                     deviceHash:  deviceHash
@@ -237,6 +244,9 @@ class OtaSdk: RCTEventEmitter {
             "hasPending":        prefs.pendingBundlePath != nil,
             "pendingBundleHash": prefs.pendingBundleHash,
             "crashCount":        prefs.crashCount,
+            // Surfaced so a device can be asked what runtime it declares.
+            // Without it, a runtime_version_mismatch is invisible app-side.
+            "runtimeVersion":    DeviceInfo.runtimeVersion(),
         ])
     }
 
