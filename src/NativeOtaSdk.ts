@@ -56,6 +56,8 @@ export interface SDKStatus {
   hasPending: boolean;
   pendingBundleHash: string;
   crashCount: number;
+  /** Compatibility token compiled into the binary. Read-only from JS. */
+  runtimeVersion: string;
 }
 
 export interface Spec extends TurboModule {

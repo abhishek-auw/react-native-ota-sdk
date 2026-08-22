@@ -1,14 +1,26 @@
+# CI is paused during pre-release development.
+#
+# Nothing here runs automatically: the push and pull_request triggers are
+# commented out below, leaving only workflow_dispatch so the pipeline can still
+# be started by hand from the Actions tab. The jobs themselves are untouched —
+# re-enabling is a matter of uncommenting the two triggers.
+#
+# Reason: the project is not released yet and the whole surface is still moving,
+# so red builds on every push were noise rather than signal. Turn this back on
+# before the first real release, when a broken main starts to matter.
+
 name: CI
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
-  merge_group:
-    types:
-      - checks_requested
+  workflow_dispatch:
+  # push:
+  #   branches:
+  #     - main
+  # pull_request:
+  #   branches:
+  #     - main
+  # merge_group:
+  #   types:
+  #     - checks_requested
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

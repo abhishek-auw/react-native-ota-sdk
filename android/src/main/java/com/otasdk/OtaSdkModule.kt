@@ -75,6 +75,7 @@ class OtaSdkModule(reactContext: ReactApplicationContext) :
             try {
                 val deviceHash   = DeviceInfo.getDeviceHash(reactApplicationContext)
                 val appVersion   = DeviceInfo.getAppVersion(reactApplicationContext)
+                val runtimeVer   = DeviceInfo.getRuntimeVersion(reactApplicationContext)
                 val currentHash  = prefs.activeBundleHash
 
                 val result = apiClient.checkForUpdate(
@@ -82,6 +83,7 @@ class OtaSdkModule(reactContext: ReactApplicationContext) :
                     appId         = cfg.appId,
                     platform      = "android",
                     appVersion    = appVersion,
+                    runtimeVersion = runtimeVer,
                     currentHash   = currentHash,
                     channel       = cfg.channel,
                     deviceHash    = deviceHash,
@@ -266,6 +268,9 @@ class OtaSdkModule(reactContext: ReactApplicationContext) :
         map.putBoolean("hasPending",       prefs.pendingBundlePath != null)
         map.putString("pendingBundleHash", prefs.pendingBundleHash)
         map.putInt("crashCount",           prefs.crashCount)
+        // Surfaced so a device can be asked what runtime it declares. Without
+        // it, a runtime_version_mismatch is invisible from the app side.
+        map.putString("runtimeVersion",    DeviceInfo.getRuntimeVersion(reactApplicationContext))
         promise.resolve(map)
     }
 

@@ -84,6 +84,12 @@ export interface SDKStatus {
   hasPending: boolean;
   pendingBundleHash: string;
   crashCount: number;
+  /**
+   * The JS-to-native compatibility token this binary declares, read from
+   * AndroidManifest meta-data or Info.plist. Not settable from JS — see the
+   * README. Useful when the server reports runtime_version_mismatch.
+   */
+  runtimeVersion: string;
 }
 
 export interface DownloadProgressEvent {

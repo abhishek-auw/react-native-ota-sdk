@@ -59,6 +59,7 @@ class OTAApiClient {
         appId: String,
         platform: String,
         appVersion: String,
+        runtimeVersion: String,
         currentHash: String,
         channel: String,
         deviceHash: String,
@@ -67,6 +68,7 @@ class OTAApiClient {
             put("appId",             appId)
             put("platform",          platform)
             put("appVersion",        appVersion)
+            put("runtimeVersion",    runtimeVersion)
             put("currentBundleHash", currentHash)
             put("channel",           channel)
             put("deviceHash",        deviceHash)

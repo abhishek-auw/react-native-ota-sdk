@@ -59,6 +59,7 @@ class OtaSdk: RCTEventEmitter {
             do {
                 let deviceHash  = DeviceInfo.deviceHash()
                 let appVersion  = DeviceInfo.appVersion()
+                let runtimeVer  = DeviceInfo.runtimeVersion()
                 let currentHash = self.prefs.activeBundleHash
 
                 let result = try self.apiClient.checkForUpdate(
@@ -66,6 +67,7 @@ class OtaSdk: RCTEventEmitter {
                     appId:       cfg.appId,
                     platform:    "ios",
                     appVersion:  appVersion,
+                    runtimeVersion: runtimeVer,
                     currentHash: currentHash,
                     channel:     cfg.channel,
                     deviceHash:  deviceHash
@@ -242,6 +244,9 @@ class OtaSdk: RCTEventEmitter {
             "hasPending":        prefs.pendingBundlePath != nil,
             "pendingBundleHash": prefs.pendingBundleHash,
             "crashCount":        prefs.crashCount,
+            // Surfaced so a device can be asked what runtime it declares.
+            // Without it, a runtime_version_mismatch is invisible app-side.
+            "runtimeVersion":    DeviceInfo.runtimeVersion(),
         ])
     }
 

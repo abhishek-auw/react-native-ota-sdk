@@ -134,6 +134,29 @@ override val reactNativeHost: ReactNativeHost =
   }
 ```
 
+#### Declare a runtime version
+
+**Also required.** The runtime version is the JS-to-native compatibility token.
+The server serves a bundle only to binaries declaring exactly the same value, so
+JavaScript built against a native contract this binary does not have can never
+reach it.
+
+`android/app/src/main/AndroidManifest.xml`, inside `<application>`:
+
+```xml
+<meta-data android:name="com.otasdk.RUNTIME_VERSION" android:value="1" />
+```
+
+Start at `1` and leave it alone. **Bump it only when the JS-to-native contract
+breaks** — a native module added or removed, a bridge signature changed, a React
+Native upgrade. A native release with no bridge changes keeps the same value and
+inherits every bundle already published for it.
+
+It is read from the manifest rather than passed to `configure()` on purpose. If
+the token lived in JavaScript, an OTA update could raise its own runtime and
+pull in bundles built for a native contract the installed binary lacks — which
+is the exact failure the token exists to prevent.
+
 #### Verifying the hook runs
 
 `getJSBundleFile` logs on every call, so you can confirm it without adding
@@ -171,6 +194,13 @@ override func bundleURL() -> URL? {
 
 On older versions the equivalent hook is `sourceURL(for bridge:)` on your
 `RCTBridgeDelegate`, with the same body.
+
+Declare the runtime version in `Info.plist`, matching the Android value:
+
+```xml
+<key>OTARuntimeVersion</key>
+<string>1</string>
+```
 
 Both helpers also promote a pending bundle to active, which is what makes an
 update downloaded during one session take effect on the next launch.
@@ -600,6 +630,13 @@ user has not opened, or the app crashes before it. Move it earlier.
 **`checkForUpdate()` rejects with `NOT_CONFIGURED`**
 `configure()` has not run yet. If you are using `OTAProvider`, make sure nothing
 calls the SDK before it mounts.
+
+**Update check returns nothing, server says `runtime_version_mismatch`**
+The binary declares a runtime version that has no bundles published for it.
+Check what the device reports with `getStatus().runtimeVersion` and compare it
+against the runtime on the bundle. Usually either the manifest/plist value was
+never added (it defaults to `"1"` and logs a warning), or a bundle was uploaded
+with the wrong runtime.
 
 **Update check returns nothing when a bundle exists**
 The device is outside the bundle's version range, on a different channel, outside
