@@ -263,6 +263,7 @@ class OtaSdkModule(reactContext: ReactApplicationContext) :
     @ReactMethod
     fun getStatus(promise: Promise) {
         val map = Arguments.createMap()
+        map.putString("activeBundleId",    prefs.activeBundleId)
         map.putString("activeBundleHash",  prefs.activeBundleHash)
         map.putString("activeBundlePath",  prefs.activeBundlePath ?: "")
         map.putBoolean("hasPending",       prefs.pendingBundlePath != null)

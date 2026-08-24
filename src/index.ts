@@ -79,6 +79,13 @@ export interface NoUpdate {
 }
 
 export interface SDKStatus {
+  /**
+   * Server bundle id of the active bundle — the one the app boots from.
+   * Empty string when no OTA bundle has been applied (the app is on the JS
+   * compiled into the binary), or when the active bundle was applied by an
+   * SDK build older than this field.
+   */
+  activeBundleId: string;
   activeBundleHash: string;
   activeBundlePath: string;
   hasPending: boolean;
@@ -90,6 +97,28 @@ export interface SDKStatus {
    * README. Useful when the server reports runtime_version_mismatch.
    */
   runtimeVersion: string;
+}
+
+/**
+ * Which bundle the JS that is currently executing was loaded from.
+ *
+ * Note this is a property of the *running* session, not of the OTA state on
+ * disk: `applyPendingBundle()` repoints the active bundle for the next launch,
+ * so a bundle can be applied while this still describes the older one.
+ */
+export interface ActiveBundleInfo {
+  /**
+   * Server bundle id, or null when the app is running the JS shipped in the
+   * binary. Also null for a bundle applied by an SDK build older than this
+   * field — in that case `isEmbedded` is false but the id is unknown.
+   */
+  bundleId: string | null;
+  /** SHA-256 of the running bundle. Empty for the embedded bundle. */
+  hash: string;
+  /** On-disk path of the running bundle. Empty for the embedded bundle. */
+  path: string;
+  /** true when the app is running the JS compiled into the binary. */
+  isEmbedded: boolean;
 }
 
 export interface DownloadProgressEvent {
@@ -167,6 +196,7 @@ export function applyPendingBundle(): Promise<string> {
  * Get current SDK state from native layer.
  */
 export function getStatus(): Promise<SDKStatus> {
+  assertNative();
   return OtaSdk.getStatus();
 }
 

@@ -21,6 +21,15 @@ class OTAPrefs(context: Context) {
         get() = prefs.getString(KEY_ACTIVE_HASH, "") ?: ""
         set(v) = prefs.edit().putString(KEY_ACTIVE_HASH, v).apply()
 
+    /**
+     * Server bundle id of the active bundle. Empty when the app is on the JS
+     * compiled into the binary, or when the active bundle was applied by an
+     * SDK build that predates this key.
+     */
+    var activeBundleId: String
+        get() = prefs.getString(KEY_ACTIVE_ID, "") ?: ""
+        set(v) = prefs.edit().putString(KEY_ACTIVE_ID, v).apply()
+
     // ── Pending (downloaded, not yet applied) bundle ──────────────────
     var pendingBundlePath: String?
         get() = prefs.getString(KEY_PENDING_PATH, null)
@@ -58,6 +67,7 @@ class OTAPrefs(context: Context) {
     companion object {
         private const val KEY_ACTIVE_PATH    = "active_bundle_path"
         private const val KEY_ACTIVE_HASH    = "active_bundle_hash"
+        private const val KEY_ACTIVE_ID      = "active_bundle_id"
         private const val KEY_PENDING_PATH   = "pending_bundle_path"
         private const val KEY_PENDING_HASH   = "pending_bundle_hash"
         private const val KEY_PENDING_ID     = "pending_bundle_id"

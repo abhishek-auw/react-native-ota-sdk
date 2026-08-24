@@ -30,9 +30,11 @@ import {
   checkForUpdate,
   downloadBundle,
   applyPendingBundle,
+  getStatus,
   markStable,
   onDownloadProgress,
   onOTAEvent,
+  type ActiveBundleInfo,
   type OTAConfig,
   type UpdateInfo,
 } from './index';
@@ -51,6 +53,12 @@ interface OTAState {
   updateInfo: UpdateInfo | null;
   downloadProgress: number;       // 0–1
   error: string | null;
+  /**
+   * Which bundle the running JS came from. null until the native layer has
+   * answered (one tick after mount), and on platforms where the native module
+   * is missing.
+   */
+  activeBundle: ActiveBundleInfo | null;
   checkForUpdate: () => Promise<void>;
   applyUpdate: () => Promise<void>;
 }
@@ -66,6 +74,19 @@ interface OTAProviderProps {
   checkOnMount?: boolean;
   /** Mark app as stable after this many ms. Default: 5000 */
   stableAfterMs?: number;
+  /**
+   * Called once on mount with the bundle the running JS was loaded from —
+   * the OTA bundle id, or `isEmbedded: true` for the JS shipped in the binary.
+   *
+   * Use it to tag crash reports and analytics with the JS actually executing.
+   *
+   * It fires once per mount and deliberately does not fire again after an
+   * update is applied: `applyPendingBundle()` only repoints the bundle for the
+   * *next* launch, so re-reporting then would name JS that isn't running. On
+   * the reload that follows, the provider remounts and this fires with the
+   * new id.
+   */
+  onActiveBundle?: (bundle: ActiveBundleInfo) => void;
 }
 
 export function OTAProvider({
@@ -73,11 +94,13 @@ export function OTAProvider({
   children,
   checkOnMount = true,
   stableAfterMs = 5000,
+  onActiveBundle,
 }: OTAProviderProps) {
   const [status, setStatus]     = useState<OTAState['status']>('idle');
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [progress, setProgress] = useState(0);
   const [error, setError]       = useState<string | null>(null);
+  const [activeBundle, setActiveBundle] = useState<ActiveBundleInfo | null>(null);
 
   // Hold the config in a ref so the mount effect can read it without
   // re-running when the caller passes a fresh object literal each render.
@@ -87,9 +110,33 @@ export function OTAProvider({
   const stableAfterMsRef = useRef(stableAfterMs);
   stableAfterMsRef.current = stableAfterMs;
 
+  const onActiveBundleRef = useRef(onActiveBundle);
+  onActiveBundleRef.current = onActiveBundle;
+
   // Configure native SDK once
   useEffect(() => {
     configure(configRef.current);
+
+    // Ask native which bundle this session booted from. Read here, before any
+    // download or apply, so the answer describes the JS that is executing.
+    let disposed = false;
+    (async () => {
+      try {
+        const s = await getStatus();
+        if (disposed) return;
+        const bundle: ActiveBundleInfo = {
+          bundleId:   s.activeBundleId || null,
+          hash:       s.activeBundleHash,
+          path:       s.activeBundlePath,
+          isEmbedded: !s.activeBundlePath,
+        };
+        setActiveBundle(bundle);
+        onActiveBundleRef.current?.(bundle);
+      } catch (e) {
+        // Best-effort telemetry — never let it break app startup.
+        if (__DEV__) console.warn('[OTA] could not read active bundle', e);
+      }
+    })();
 
     // Subscribe to native events
     const progressSub = onDownloadProgress(({ progress: p }) => setProgress(p));
@@ -103,6 +150,7 @@ export function OTAProvider({
     const timer = setTimeout(() => markStable(), stableAfterMsRef.current);
 
     return () => {
+      disposed = true;
       progressSub.remove();
       eventSub.remove();
       clearTimeout(timer);
@@ -172,6 +220,7 @@ export function OTAProvider({
         updateInfo,
         downloadProgress: progress,
         error,
+        activeBundle,
         checkForUpdate:  doCheckForUpdate,
         applyUpdate:     () => doApplyUpdate(),
       }}

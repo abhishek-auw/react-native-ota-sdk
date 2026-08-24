@@ -281,6 +281,50 @@ export default function App() {
 | `config` | `OTAConfig` | — | Required. See [Configuration](#configuration) |
 | `checkOnMount` | `boolean` | `true` | Check for an update as soon as the provider mounts |
 | `stableAfterMs` | `number` | `5000` | Call `markStable()` after this long without a crash |
+| `onActiveBundle` | `(bundle: ActiveBundleInfo) => void` | — | Reports which bundle the running JS came from. See below |
+
+#### Knowing which bundle the app is running
+
+`onActiveBundle` fires once on mount with the bundle the executing JS was
+loaded from — useful for tagging crash reports and analytics, so a spike in
+errors can be traced back to the release that caused it.
+
+```tsx
+<OTAProvider
+  config={{ appId: 'your-app-uuid', serverUrl: 'https://ota.yourcompany.com' }}
+  onActiveBundle={({ bundleId, hash, isEmbedded }) => {
+    Sentry.setTag('ota_bundle', isEmbedded ? 'embedded' : bundleId ?? hash);
+  }}
+>
+```
+
+```ts
+interface ActiveBundleInfo {
+  /** Server bundle id, or null when running the JS shipped in the binary */
+  bundleId: string | null;
+  /** SHA-256 of the running bundle. Empty for the embedded bundle */
+  hash: string;
+  /** On-disk path of the running bundle. Empty for the embedded bundle */
+  path: string;
+  /** true when the app is running the JS compiled into the binary */
+  isEmbedded: boolean;
+}
+```
+
+The same value is on the `useOTA()` context as `activeBundle` (`null` until
+native answers, one tick after mount).
+
+Two things to keep in mind:
+
+- **It describes the running JS, not the OTA state on disk.** Applying an
+  update repoints the bundle for the *next* launch, so `activeBundle` keeps
+  naming the older bundle until the app reloads — which is correct, because
+  that is still what is executing. On the reload the provider remounts and
+  `onActiveBundle` fires with the new id.
+- **`bundleId` can be `null` while `isEmbedded` is `false`.** The SDK only
+  started persisting the id alongside the hash in this version, so a bundle
+  applied by an older build has a `hash` but no id. Fall back to `hash` when
+  you need a stable identifier.
 
 Then read state anywhere below it with `useOTA()`:
 
@@ -433,11 +477,14 @@ Convenience wrapper: check → download → apply. Accepts
 
 ```ts
 interface SDKStatus {
+  /** Bundle id the app boots from. Empty when running the embedded bundle */
+  activeBundleId: string;
   activeBundleHash: string;
   activeBundlePath: string;
   hasPending: boolean;
   pendingBundleHash: string;
   crashCount: number;
+  runtimeVersion: string;
 }
 ```
 

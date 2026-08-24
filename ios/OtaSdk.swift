@@ -239,6 +239,7 @@ class OtaSdk: RCTEventEmitter {
     @objc func getStatus(_ resolve: @escaping RCTPromiseResolveBlock,
                           rejecter reject: @escaping RCTPromiseRejectBlock) {
         resolve([
+            "activeBundleId":    prefs.activeBundleId,
             "activeBundleHash":  prefs.activeBundleHash,
             "activeBundlePath":  prefs.activeBundlePath ?? "",
             "hasPending":        prefs.pendingBundlePath != nil,

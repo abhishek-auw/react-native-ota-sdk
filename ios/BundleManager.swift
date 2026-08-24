@@ -226,10 +226,14 @@ class BundleManager {
     /// Promote pending → active.
     func applyPendingBundle() {
         guard let pendingPath = prefs.pendingBundlePath else { return }
+        let pendingId = prefs.pendingBundleId
         prefs.activeBundlePath = pendingPath
         prefs.activeBundleHash = prefs.pendingBundleHash
+        // Carry the id across too — clearPending() is about to drop it, and it
+        // is the only human-readable handle on what the device is running.
+        prefs.activeBundleId   = pendingId
         prefs.clearPending()
-        NSLog("[OTA] Bundle applied: %@", pendingPath)
+        NSLog("[OTA] Bundle applied: %@ (id=%@)", pendingPath, pendingId)
     }
 
     /// Get active bundle URL for RCTBridge. Returns nil to use embedded asset.
@@ -244,6 +248,7 @@ class BundleManager {
         NSLog("[OTA] Rolling back to embedded bundle")
         prefs.activeBundlePath = nil
         prefs.activeBundleHash = ""
+        prefs.activeBundleId   = ""
         prefs.clearPending()
         prefs.resetCrashCount()
     }
