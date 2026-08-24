@@ -187,9 +187,30 @@ export function downloadBundle(
 /**
  * Mark the downloaded bundle as active. Takes effect on next JS reload.
  * Returns the bundle path.
+ *
+ * This does not reload anything by itself — it repoints which file the next
+ * React instance will load. Follow it with `restartApp()` to make that
+ * instance happen now.
  */
 export function applyPendingBundle(): Promise<string> {
   return OtaSdk.applyPendingBundle();
+}
+
+/**
+ * Restart the React instance, loading the bundle `applyPendingBundle()` made
+ * active. This is what turns "downloaded" into "running" without waiting for
+ * the user to kill the app.
+ *
+ * Call it only after `applyPendingBundle()` has resolved. Restarting with a
+ * pending-but-unapplied bundle reloads the one already running, which is
+ * indistinguishable from the update having silently failed.
+ *
+ * The returned promise resolves as the teardown starts. Nothing after the
+ * await is guaranteed to run — do any persisting you need beforehand.
+ */
+export function restartApp(): Promise<void> {
+  assertNative();
+  return OtaSdk.restartApp();
 }
 
 /**
@@ -261,8 +282,11 @@ export async function checkAndApply(options?: {
     });
     await applyPendingBundle();
     if (result.mandatory) {
-      // Native will reload the JS bundle on next resume
-      // For immediate apply, call RCTReloadCommand from native (done in BundleManager)
+      // A mandatory update is not mandatory if the user decides when it lands.
+      // This used to be an empty block with a comment claiming native reloaded
+      // on resume; nothing did, so "force update" meant the same as every other
+      // mode — whenever the user next killed the app.
+      await restartApp();
     }
   } finally {
     sub?.remove();

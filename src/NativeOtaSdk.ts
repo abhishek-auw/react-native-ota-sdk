@@ -79,6 +79,12 @@ export interface Spec extends TurboModule {
   getStatus(): Promise<SDKStatus>;
   markStable(): void;
   rollback(): Promise<void>;
+  /**
+   * Restart the React instance so the applied bundle is loaded.
+   * Resolves just before the teardown begins — the JS calling it is about to
+   * stop existing, so treat the resolution as "accepted", not "finished".
+   */
+  restartApp(): Promise<void>;
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('OtaSdk');
