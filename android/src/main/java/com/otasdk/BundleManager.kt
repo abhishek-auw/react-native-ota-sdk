@@ -81,12 +81,16 @@ class BundleManager(private val context: Context, private val prefs: OTAPrefs) {
     fun applyPendingBundle() {
         val pendingPath = prefs.pendingBundlePath ?: return
         val pendingHash = prefs.pendingBundleHash
+        val pendingId   = prefs.pendingBundleId
 
         prefs.activeBundlePath = pendingPath
         prefs.activeBundleHash = pendingHash
+        // Carry the id across too — clearPending() is about to drop it, and it
+        // is the only human-readable handle on what the device is running.
+        prefs.activeBundleId   = pendingId
         prefs.clearPending()
 
-        Log.d(TAG, "Bundle applied: $pendingPath (hash=$pendingHash)")
+        Log.d(TAG, "Bundle applied: $pendingPath (id=$pendingId hash=$pendingHash)")
     }
 
     /**
@@ -272,6 +276,7 @@ class BundleManager(private val context: Context, private val prefs: OTAPrefs) {
         Log.w(TAG, "Rolling back — clearing OTA bundle state")
         prefs.activeBundlePath = null
         prefs.activeBundleHash = ""
+        prefs.activeBundleId   = ""
         prefs.clearPending()
         prefs.resetCrashCount()
     }

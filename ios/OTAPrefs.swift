@@ -17,6 +17,14 @@ class OTAPrefs {
         set { defaults.set(newValue, forKey: "ota_active_hash") }
     }
 
+    /// Server bundle id of the active bundle. Empty when the app is on the JS
+    /// compiled into the binary, or when the active bundle was applied by an
+    /// SDK build that predates this key.
+    var activeBundleId: String {
+        get { defaults.string(forKey: "ota_active_id") ?? "" }
+        set { defaults.set(newValue, forKey: "ota_active_id") }
+    }
+
     // MARK: Pending bundle (downloaded, awaiting apply)
 
     var pendingBundlePath: String? {

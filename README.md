@@ -157,6 +157,47 @@ the token lived in JavaScript, an OTA update could raise its own runtime and
 pull in bundles built for a native contract the installed binary lacks — which
 is the exact failure the token exists to prevent.
 
+##### Or let the build compute it
+
+Managing the value by hand means the guarantee is only as good as someone
+remembering to bump it after `npm install react-native-svg`. Two scripts ship
+with this package to derive it instead, from a hash of the native project —
+native dependency versions, the React Native version, and the contents of
+`android/` and `ios/`.
+
+**Android** — in `android/app/build.gradle`, above the `android { }` block:
+
+```groovy
+apply from: "../../node_modules/react-native-ota-sdk/scripts/ota-fingerprint.gradle"
+```
+
+then use the placeholder instead of a literal value:
+
+```xml
+<meta-data
+    android:name="com.otasdk.RUNTIME_VERSION"
+    android:value="${otaRuntimeVersion}" />
+```
+
+**iOS** — add a Run Script build phase, positioned *after* Copy Bundle
+Resources:
+
+```sh
+"$SRCROOT/../node_modules/react-native-ota-sdk/scripts/ota-fingerprint-ios.sh"
+```
+
+Leave `OTARuntimeVersion` out of your source `Info.plist`; the script writes it
+into the built one.
+
+`ota deploy` computes the same fingerprint over the same source tree, so the
+binary and the bundle agree by construction rather than by anyone keeping two
+values in step. Install a native package and the fingerprint moves on its own;
+a bundle published afterwards cannot reach a binary built before it.
+
+Both scripts fail the build rather than falling back to a default. A binary
+declaring a runtime nothing publishes to would simply never receive updates,
+with nothing anywhere to explain why.
+
 #### Verifying the hook runs
 
 `getJSBundleFile` logs on every call, so you can confirm it without adding
@@ -240,6 +281,50 @@ export default function App() {
 | `config` | `OTAConfig` | — | Required. See [Configuration](#configuration) |
 | `checkOnMount` | `boolean` | `true` | Check for an update as soon as the provider mounts |
 | `stableAfterMs` | `number` | `5000` | Call `markStable()` after this long without a crash |
+| `onActiveBundle` | `(bundle: ActiveBundleInfo) => void` | — | Reports which bundle the running JS came from. See below |
+
+#### Knowing which bundle the app is running
+
+`onActiveBundle` fires once on mount with the bundle the executing JS was
+loaded from — useful for tagging crash reports and analytics, so a spike in
+errors can be traced back to the release that caused it.
+
+```tsx
+<OTAProvider
+  config={{ appId: 'your-app-uuid', serverUrl: 'https://ota.yourcompany.com' }}
+  onActiveBundle={({ bundleId, hash, isEmbedded }) => {
+    Sentry.setTag('ota_bundle', isEmbedded ? 'embedded' : bundleId ?? hash);
+  }}
+>
+```
+
+```ts
+interface ActiveBundleInfo {
+  /** Server bundle id, or null when running the JS shipped in the binary */
+  bundleId: string | null;
+  /** SHA-256 of the running bundle. Empty for the embedded bundle */
+  hash: string;
+  /** On-disk path of the running bundle. Empty for the embedded bundle */
+  path: string;
+  /** true when the app is running the JS compiled into the binary */
+  isEmbedded: boolean;
+}
+```
+
+The same value is on the `useOTA()` context as `activeBundle` (`null` until
+native answers, one tick after mount).
+
+Two things to keep in mind:
+
+- **It describes the running JS, not the OTA state on disk.** Applying an
+  update repoints the bundle for the *next* launch, so `activeBundle` keeps
+  naming the older bundle until the app reloads — which is correct, because
+  that is still what is executing. On the reload the provider remounts and
+  `onActiveBundle` fires with the new id.
+- **`bundleId` can be `null` while `isEmbedded` is `false`.** The SDK only
+  started persisting the id alongside the hash in this version, so a bundle
+  applied by an older build has a `hash` but no id. Fall back to `hash` when
+  you need a stable identifier.
 
 Then read state anywhere below it with `useOTA()`:
 
@@ -392,11 +477,14 @@ Convenience wrapper: check → download → apply. Accepts
 
 ```ts
 interface SDKStatus {
+  /** Bundle id the app boots from. Empty when running the embedded bundle */
+  activeBundleId: string;
   activeBundleHash: string;
   activeBundlePath: string;
   hasPending: boolean;
   pendingBundleHash: string;
   crashCount: number;
+  runtimeVersion: string;
 }
 ```
 
@@ -622,6 +710,21 @@ drop the trailing slash from `serverUrl`.
 The server is presigning download URLs against its own address. Set
 `S3_PUBLIC_ENDPOINT` to something the device can reach, or use
 `adb reverse tcp:9000 tcp:9000` so `localhost` on the device means your machine.
+
+**Cold start got much slower after the first OTA update**
+The bundle was shipped as plain JavaScript while your APK contains Hermes
+bytecode. Hermes then parses and compiles the whole bundle on *every* cold
+start, and that work is not cached — seconds on a large app. Build with a CLI
+that runs `hermesc`; `ota deploy` does this by default. Confirm by checking the
+first four bytes of the bundle on the device:
+
+```bash
+adb shell run-as <your.package> \
+  head -c 4 files/ota/bundles/<hash>/index.android.bundle | xxd
+```
+
+`c6 1f bc 03` is bytecode. Anything else — usually `var ` or `//` — is plain
+JavaScript, and that is your regression.
 
 **A good bundle keeps rolling back**
 `markStable()` is not being reached — often because it sits behind a screen the

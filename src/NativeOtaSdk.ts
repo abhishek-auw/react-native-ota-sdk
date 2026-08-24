@@ -51,6 +51,8 @@ export interface DownloadResult {
 }
 
 export interface SDKStatus {
+  /** Server bundle id of the active bundle. Empty when running the embedded bundle. */
+  activeBundleId: string;
   activeBundleHash: string;
   activeBundlePath: string;
   hasPending: boolean;
