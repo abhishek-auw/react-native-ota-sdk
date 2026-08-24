@@ -283,6 +283,58 @@ export default function App() {
 | `stableAfterMs` | `number` | `5000` | Call `markStable()` after this long without a crash |
 | `onActiveBundle` | `(bundle: ActiveBundleInfo) => void` | — | Reports which bundle the running JS came from. See below |
 
+#### A restart button
+
+`useOTA()` gives you the download state and a `restartApp()` that applies the
+staged bundle now. The two-step shape is deliberate: downloading is safe to do
+whenever, but replacing the running JS throws away in-progress work, so the
+decision belongs to you — or to your user.
+
+```tsx
+import { useOTA } from 'react-native-ota-sdk';
+
+function UpdateBanner() {
+  const { status, downloadProgress, updateInfo, applyUpdate, restartApp } = useOTA();
+
+  if (status === 'update_available') {
+    return (
+      <Banner>
+        <Text>Update available{updateInfo?.releaseNotes ? `: ${updateInfo.releaseNotes}` : ''}</Text>
+        <Button title="Download" onPress={applyUpdate} />
+      </Banner>
+    );
+  }
+
+  if (status === 'downloading') {
+    return <ProgressBar value={downloadProgress} />;   // 0–1
+  }
+
+  if (status === 'ready_to_install') {
+    return (
+      <Banner>
+        <Text>Update ready</Text>
+        {/* onPress is all it takes — applyUpdate() already staged the bundle */}
+        <Button title="Restart now" onPress={restartApp} />
+      </Banner>
+    );
+  }
+
+  return null;
+}
+```
+
+`applyUpdate()` downloads **and** applies, leaving `status` at
+`'ready_to_install'`. So by the time the button renders, the bundle is staged and
+`restartApp()` is safe to call.
+
+Calling `restartApp()` before that point sets `status` to `'error'` rather than
+reloading — a button that appears to do nothing is worse than one that says why.
+Double taps are ignored; the first call is already tearing the instance down.
+
+**Prefer a prompt over an automatic restart.** Reloading mid-scroll, mid-form or
+mid-video reads as a crash to the person holding the phone. The exception is
+`mandatory: true`, which restarts on its own — that is what makes it mandatory.
+
 #### Knowing which bundle the app is running
 
 `onActiveBundle` fires once on mount with the bundle the executing JS was
@@ -464,9 +516,27 @@ was used.
 
 ### `applyPendingBundle(): Promise<string>`
 
-Marks the downloaded bundle as the one to load next. **Takes effect on the next
-app launch**, not immediately — a JS bundle can only be swapped when the runtime
-restarts.
+Marks the downloaded bundle as the one to load next. It repoints a file — it
+does not reload anything. A JS bundle can only be swapped when the runtime
+restarts, so this takes effect on the next launch, or on the next
+`restartApp()`.
+
+### `restartApp(): Promise<void>`
+
+Restarts the React instance immediately, loading whatever `applyPendingBundle()`
+made active. This is what turns "downloaded" into "running" without waiting for
+the user to swipe the app away.
+
+Call it **only after `applyPendingBundle()` has resolved**. Restarting with a
+pending-but-unapplied bundle reloads the bundle already running, which is
+indistinguishable from the update having silently failed.
+
+The promise resolves as teardown begins. Nothing after the `await` is guaranteed
+to run — persist anything you care about first.
+
+Android uses `ReactHost.reload()` under the New Architecture and falls back to
+`ReactInstanceManager.recreateReactContextInBackground()` on the bridge. iOS uses
+`RCTTriggerReloadCommandListeners`, the same path React Native uses for Cmd-R.
 
 ### `checkAndApply(options?): Promise<UpdateInfo | NoUpdate>`
 

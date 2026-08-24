@@ -276,6 +276,29 @@ class OtaSdk: RCTEventEmitter {
         resolve(true)
     }
 
+    // ── restart ──────────────────────────────────────────────────────
+
+    /// Reload the JS bundle so the applied bundle takes effect now.
+    ///
+    /// `applyPendingBundle()` only repoints which file the next load reads.
+    /// RCTTriggerReloadCommandListeners is what React Native itself uses for
+    /// Cmd-R in development, and it is the supported way to ask for a reload
+    /// under both the bridge and bridgeless architectures.
+    ///
+    /// Untested on a device — no iOS build of this SDK has been run yet.
+    @objc func restartApp(_ resolve: @escaping RCTPromiseResolveBlock,
+                          rejecter reject: @escaping RCTPromiseRejectBlock) {
+        // Must be main-thread: the reload tears down the bridge/host.
+        DispatchQueue.main.async {
+            NSLog("[OTA] Restarting to apply bundle")
+            // Resolve before triggering. The reload destroys the JS context
+            // that is waiting on this promise, so resolving afterwards would
+            // deliver to an instance that no longer exists.
+            resolve(nil)
+            RCTTriggerReloadCommandListeners("OTA bundle applied")
+        }
+    }
+
     // ── Private ───────────────────────────────────────────────────────
 
     private func runCrashGuardCheck() {

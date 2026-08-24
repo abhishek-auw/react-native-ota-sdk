@@ -34,6 +34,7 @@ import {
   markStable,
   onDownloadProgress,
   onOTAEvent,
+  restartApp,
   type ActiveBundleInfo,
   type OTAConfig,
   type UpdateInfo,
@@ -60,7 +61,16 @@ interface OTAState {
    */
   activeBundle: ActiveBundleInfo | null;
   checkForUpdate: () => Promise<void>;
+  /** Download + apply. Leaves status at 'ready_to_install'. */
   applyUpdate: () => Promise<void>;
+  /**
+   * Restart now, loading the bundle that applyUpdate() staged.
+   *
+   * Only meaningful once status is 'ready_to_install'. Calling it earlier
+   * reloads the bundle already running, which looks like the update failing.
+   * Nothing after the await is guaranteed to run.
+   */
+  restartApp: () => Promise<void>;
 }
 
 const OTAContext = createContext<OTAState | null>(null);
@@ -181,6 +191,32 @@ export function OTAProvider({
     }
   }, [updateInfo]);
 
+  /**
+   * Guarded so a double tap cannot start two teardowns. The first call takes
+   * the process down mid-flight, so the second lands in an instance that is
+   * already disappearing — which surfaces as an unhandled rejection rather
+   * than anything useful.
+   */
+  const restartingRef = useRef(false);
+  const doRestart = useCallback(async () => {
+    if (restartingRef.current) return;
+    if (status !== 'ready_to_install') {
+      // Restarting without a staged bundle reloads what is already running.
+      // Failing loudly here beats a button that looks like it did nothing.
+      setError('Nothing staged to apply — call applyUpdate() first');
+      setStatus('error');
+      return;
+    }
+    restartingRef.current = true;
+    try {
+      await restartApp();
+    } catch (e: any) {
+      restartingRef.current = false;
+      setStatus('error');
+      setError(e?.message ?? 'Restart failed');
+    }
+  }, [status]);
+
   const doCheckForUpdate = useCallback(async () => {
     setStatus('checking');
     setError(null);
@@ -223,6 +259,7 @@ export function OTAProvider({
         activeBundle,
         checkForUpdate:  doCheckForUpdate,
         applyUpdate:     () => doApplyUpdate(),
+        restartApp:      doRestart,
       }}
     >
       {children}
