@@ -1,10 +1,13 @@
 package com.otasdk
 
-import com.facebook.react.ReactApplication
+import android.content.Intent
+import android.os.Handler
+import android.os.Looper
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import kotlinx.coroutines.*
 import android.util.Log
+import kotlin.system.exitProcess
 
 /**
  * OtaSdkModule — main React Native native module.
@@ -299,69 +302,75 @@ class OtaSdkModule(reactContext: ReactApplicationContext) :
     // ── Restart to apply ──────────────────────────────────────────────
 
     /**
-     * Tear down the React instance and start it again, loading whichever
-     * bundle `applyPendingBundle()` last made active.
+     * Relaunch the app so the bundle `applyPendingBundle()` made active is
+     * the one that loads.
      *
-     * `applyPendingBundle()` only repoints the file that the *next* instance
-     * will load. Something has to actually create that next instance, and
-     * before this existed nothing did — "force update" and "restart now" both
-     * came down to hoping the user swiped the app away themselves.
+     * This kills the process rather than reloading the React instance, and
+     * that is not an implementation shortcut — a reload cannot work here.
+     * `getDefaultReactHost(..., jsBundleFilePath = ...)` freezes the path into
+     * an immutable JSBundleLoader when the host is constructed, and hosts are
+     * conventionally built inside `by lazy`, so the path is fixed for the
+     * lifetime of the process. Calling ReactHost.reload() re-runs the same
+     * loader against the same file: the JS restarts, the bundle does not
+     * change, and it looks exactly like the update failing silently.
      *
-     * Call it only after applyPendingBundle() has resolved. Restarting with a
-     * pending-but-unapplied bundle reloads the bundle already running, which
-     * looks exactly like the update silently failing.
+     * The cost is that the user sees a genuine relaunch — splash screen, back
+     * stack cleared, native state gone. Prompt before calling it.
      */
     @ReactMethod
     fun restartApp(promise: Promise) {
-        // Must run on the UI thread: both reload paths tear down and rebuild
-        // the React host, and neither is safe from the native modules thread.
+        Log.i(TAG, "restartApp() called")
+
         UiThreadUtil.runOnUiThread {
             try {
-                val app = reactApplicationContext.applicationContext
-                var reloaded = false
-
-                // New Architecture (bridgeless). ReactHost owns the instance
-                // and there is no ReactInstanceManager to ask, so the legacy
-                // path below silently does nothing here — which is exactly the
-                // trap that made OTA updates appear to download and never
-                // apply on this app.
-                if (app is ReactApplication) {
-                    val host = try {
-                        app.reactHost
-                    } catch (_: Throwable) {
-                        // reactHost is only present on RN 0.73+; older versions
-                        // throw rather than returning null.
-                        null
-                    }
-                    if (host != null) {
-                        host.reload("OTA bundle applied")
-                        reloaded = true
-                    }
-                }
-
-                // Legacy bridge architecture.
-                if (!reloaded && app is ReactApplication) {
-                    val manager = app.reactNativeHost.reactInstanceManager
-                    manager.recreateReactContextInBackground()
-                    reloaded = true
-                }
-
-                if (reloaded) {
-                    Log.i(TAG, "Restarting React instance to apply bundle")
-                    promise.resolve(null)
-                } else {
+                val ctx = reactApplicationContext
+                val launch = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)
+                if (launch?.component == null) {
                     promise.reject(
-                        "NO_REACT_HOST",
-                        "Application does not implement ReactApplication, so the " +
-                            "React instance cannot be restarted from here. Ask the " +
-                            "user to relaunch the app instead.",
+                        "NO_LAUNCH_INTENT",
+                        "No launcher activity for ${ctx.packageName}, so the app " +
+                            "cannot relaunch itself. Ask the user to reopen it.",
                     )
+                    return@runOnUiThread
                 }
+
+                Log.i(TAG, "restartApp: relaunching ${launch.component}")
+
+                // makeRestartActivityTask sets NEW_TASK | CLEAR_TASK, which is
+                // required when starting an activity from a non-activity
+                // context and also clears the back stack so the user does not
+                // return into screens rendered by the previous bundle.
+                val restart = Intent.makeRestartActivityTask(launch.component).apply {
+                    // Android 15 rejects implicit intents that do not name a
+                    // package, even ones carrying an explicit component.
+                    setPackage(ctx.packageName)
+                }
+                ctx.startActivity(restart)
+
+                promise.resolve(null)
+
+                // Kill the process so the next launch is genuinely cold.
+                //
+                // A ReactHost reload is NOT enough here, which is the whole
+                // reason this is a relaunch. getDefaultReactHost() captures
+                // jsBundleFilePath into an immutable JSBundleLoader when the
+                // host is first built, and ReactHostDelegate.jsBundleLoader is
+                // a val — reload() re-reads that same object and loads the same
+                // file. Since MainApplication builds the host in `by lazy`, the
+                // path is frozen for the lifetime of the process, so the only
+                // way to pick up a newly applied bundle is a new process.
+                //
+                // Delayed a beat so startActivity() reaches the system server
+                // before we exit; killing immediately can drop the request and
+                // leave the user staring at a closed app.
+                Handler(Looper.getMainLooper()).postDelayed({
+                    Log.i(TAG, "restartApp: exiting process to pick up the new bundle")
+                    exitProcess(0)
+                }, 300)
             } catch (e: Throwable) {
-                // Deliberately Throwable: a missing ReactHost class on an
-                // unexpected RN version surfaces as NoClassDefFoundError, not
-                // an Exception, and crashing the app while applying an update
-                // is the worst possible outcome here.
+                // Throwable, not Exception: a missing class on an unexpected
+                // Android or RN version arrives as an Error, and crashing while
+                // applying an update is the worst available outcome.
                 Log.e(TAG, "Restart failed", e)
                 promise.reject("RESTART_FAILED", e.message, e)
             }

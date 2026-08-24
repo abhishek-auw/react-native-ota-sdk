@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc *)",
+      "Bash(npx eslint *)",
+      "Bash(ls node_modules/@testing-library)",
+      "Bash(ls -d node_modules/react-test-renderer)",
+      "Bash(node -e \"const p=require\\('./package.json'\\);console.log\\(JSON.stringify\\(p.devDependencies,null,1\\)\\)\")",
+      "Bash(npx jest *)",
+      "Bash(./gradlew :react-native-ota-sdk:compileDebugKotlin --offline -q)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(git stash *)"
+    ]
+  }
+}
