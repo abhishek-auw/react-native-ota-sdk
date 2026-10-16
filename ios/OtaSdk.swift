@@ -278,12 +278,14 @@ class OtaSdk: RCTEventEmitter {
 
     // ── restart ──────────────────────────────────────────────────────
 
-    /// Reload the JS bundle so the applied bundle takes effect now.
+    /// Reload so the applied bundle takes effect now.
     ///
-    /// `applyPendingBundle()` only repoints which file the next load reads.
-    /// RCTTriggerReloadCommandListeners is what React Native itself uses for
-    /// Cmd-R in development, and it is the supported way to ask for a reload
-    /// under both the bridge and bridgeless architectures.
+    /// Unlike Android, iOS can do this without killing the process:
+    /// RCTTriggerReloadCommandListeners causes the bridge to ask its delegate
+    /// for `sourceURLForBridge:` again, so an AppDelegate that returns
+    /// OtaSdkHelper's current path picks up the new bundle. If your AppDelegate
+    /// caches that URL in a `lazy var` or stored property, it will not — the
+    /// same freeze that forces a process relaunch on Android.
     ///
     /// Untested on a device — no iOS build of this SDK has been run yet.
     @objc func restartApp(_ resolve: @escaping RCTPromiseResolveBlock,

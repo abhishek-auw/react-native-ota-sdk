@@ -97,6 +97,21 @@ interface OTAProviderProps {
    * new id.
    */
   onActiveBundle?: (bundle: ActiveBundleInfo) => void;
+  /**
+   * Run just before the process is killed by `restartApp()`.
+   *
+   * The restart is a real relaunch — `System.exit(0)` after starting the
+   * launcher activity — so anything the app has buffered but not sent goes
+   * with it. Firebase Analytics batches events on its own schedule and will
+   * not have flushed; the same is true of any queue you maintain yourself.
+   *
+   * Awaited, then capped at `beforeRestartTimeoutMs` so a hung flush cannot
+   * strand the user on a button that does nothing. A rejection is logged and
+   * ignored: failing to flush analytics is not a reason to block an update.
+   */
+  onBeforeRestart?: () => void | Promise<void>;
+  /** Ceiling on onBeforeRestart. Default: 2000ms. */
+  beforeRestartTimeoutMs?: number;
 }
 
 export function OTAProvider({
@@ -105,6 +120,8 @@ export function OTAProvider({
   checkOnMount = true,
   stableAfterMs = 5000,
   onActiveBundle,
+  onBeforeRestart,
+  beforeRestartTimeoutMs = 2000,
 }: OTAProviderProps) {
   const [status, setStatus]     = useState<OTAState['status']>('idle');
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
@@ -122,6 +139,12 @@ export function OTAProvider({
 
   const onActiveBundleRef = useRef(onActiveBundle);
   onActiveBundleRef.current = onActiveBundle;
+
+  const onBeforeRestartRef = useRef(onBeforeRestart);
+  onBeforeRestartRef.current = onBeforeRestart;
+
+  const beforeRestartTimeoutMsRef = useRef(beforeRestartTimeoutMs);
+  beforeRestartTimeoutMsRef.current = beforeRestartTimeoutMs;
 
   // Configure native SDK once
   useEffect(() => {
@@ -203,12 +226,29 @@ export function OTAProvider({
     if (status !== 'ready_to_install') {
       // Restarting without a staged bundle reloads what is already running.
       // Failing loudly here beats a button that looks like it did nothing.
+      //
+      // Warn as well as setting state: callers who only render the happy path
+      // see a dead button and no error, which is the worst of both.
+      console.warn(
+        `[OTA] restartApp() ignored — status is '${status}', expected ` +
+          `'ready_to_install'. Call applyUpdate() first and wait for it to resolve.`,
+      );
       setError('Nothing staged to apply — call applyUpdate() first');
       setStatus('error');
       return;
     }
     restartingRef.current = true;
     try {
+      const flush = onBeforeRestartRef.current;
+      if (flush) {
+        // Bounded: a flush that never settles must not become a dead button.
+        await Promise.race([
+          Promise.resolve(flush()).catch((e) => {
+            console.warn('[OTA] onBeforeRestart threw, restarting anyway', e);
+          }),
+          new Promise((r) => setTimeout(r, beforeRestartTimeoutMsRef.current)),
+        ]);
+      }
       await restartApp();
     } catch (e: any) {
       restartingRef.current = false;
