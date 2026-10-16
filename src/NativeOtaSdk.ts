@@ -80,9 +80,11 @@ export interface Spec extends TurboModule {
   markStable(): void;
   rollback(): Promise<void>;
   /**
-   * Restart the React instance so the applied bundle is loaded.
-   * Resolves just before the teardown begins — the JS calling it is about to
-   * stop existing, so treat the resolution as "accepted", not "finished".
+   * Restart the app so the applied bundle is loaded.
+   * Android: relaunches the launcher activity and kills the process — never
+   * resolves on success; rejects only when the restart can't be started.
+   * iOS: bridge reload (no relaunch/exit allowed) — resolves just before the
+   * reload tears the JS context down.
    */
   restartApp(): Promise<void>;
 }

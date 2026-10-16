@@ -205,7 +205,11 @@ export function applyPendingBundle(): Promise<string> {
  * pending-but-unapplied bundle reloads the one already running, which is
  * indistinguishable from the update having silently failed.
  *
- * The returned promise resolves as the teardown starts. Nothing after the
+ * On Android this is a hard restart: it relaunches the app and kills the
+ * process, so the returned promise never resolves on success — it only
+ * rejects if the restart can't be started. iOS cannot relaunch itself or
+ * call exit(), so it reloads the bridge instead; the promise resolves just
+ * before the reload tears the JS context down. Either way, nothing after the
  * await is guaranteed to run — do any persisting you need beforehand.
  */
 export function restartApp(): Promise<void> {

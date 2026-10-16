@@ -1,13 +1,10 @@
 package com.otasdk
 
 import android.content.Intent
-import android.os.Handler
-import android.os.Looper
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import kotlinx.coroutines.*
 import android.util.Log
-import kotlin.system.exitProcess
 
 /**
  * OtaSdkModule — main React Native native module.
@@ -302,78 +299,53 @@ class OtaSdkModule(reactContext: ReactApplicationContext) :
     // ── Restart to apply ──────────────────────────────────────────────
 
     /**
-     * Relaunch the app so the bundle `applyPendingBundle()` made active is
-     * the one that loads.
+     * Hard restart to load the bundle `applyPendingBundle()` made active:
+     * relaunch the launcher activity and kill the current process, so the
+     * next launch re-runs MainApplication and re-resolves the active bundle
+     * path.
      *
-     * This kills the process rather than reloading the React instance, and
-     * that is not an implementation shortcut — a reload cannot work here.
-     * `getDefaultReactHost(..., jsBundleFilePath = ...)` freezes the path into
-     * an immutable JSBundleLoader when the host is constructed, and hosts are
-     * conventionally built inside `by lazy`, so the path is fixed for the
-     * lifetime of the process. Calling ReactHost.reload() re-runs the same
-     * loader against the same file: the JS restarts, the bundle does not
-     * change, and it looks exactly like the update failing silently.
+     * A ReactHost.reload() cannot do this. getDefaultReactHost() freezes
+     * jsBundleFilePath into an immutable JSBundleLoader when the host is
+     * built (conventionally in `by lazy`), so a reload re-runs the same file
+     * and the update looks like it failed silently.
      *
-     * The cost is that the user sees a genuine relaunch — splash screen, back
-     * stack cleared, native state gone. Prompt before calling it.
+     * On success the process dies and the promise never resolves — treat it
+     * as fire-and-forget. It rejects only when the restart can't be started.
+     * The user sees a genuine relaunch, so prompt before calling it.
      */
     @ReactMethod
     fun restartApp(promise: Promise) {
         Log.i(TAG, "restartApp() called")
-
-        UiThreadUtil.runOnUiThread {
-            try {
-                val ctx = reactApplicationContext
-                val launch = ctx.packageManager.getLaunchIntentForPackage(ctx.packageName)
-                if (launch?.component == null) {
-                    promise.reject(
-                        "NO_LAUNCH_INTENT",
-                        "No launcher activity for ${ctx.packageName}, so the app " +
-                            "cannot relaunch itself. Ask the user to reopen it.",
-                    )
-                    return@runOnUiThread
-                }
-
-                Log.i(TAG, "restartApp: relaunching ${launch.component}")
-
-                // makeRestartActivityTask sets NEW_TASK | CLEAR_TASK, which is
-                // required when starting an activity from a non-activity
-                // context and also clears the back stack so the user does not
-                // return into screens rendered by the previous bundle.
-                val restart = Intent.makeRestartActivityTask(launch.component).apply {
-                    // Android 15 rejects implicit intents that do not name a
-                    // package, even ones carrying an explicit component.
-                    setPackage(ctx.packageName)
-                }
-                ctx.startActivity(restart)
-
-                promise.resolve(null)
-
-                // Kill the process so the next launch is genuinely cold.
-                //
-                // A ReactHost reload is NOT enough here, which is the whole
-                // reason this is a relaunch. getDefaultReactHost() captures
-                // jsBundleFilePath into an immutable JSBundleLoader when the
-                // host is first built, and ReactHostDelegate.jsBundleLoader is
-                // a val — reload() re-reads that same object and loads the same
-                // file. Since MainApplication builds the host in `by lazy`, the
-                // path is frozen for the lifetime of the process, so the only
-                // way to pick up a newly applied bundle is a new process.
-                //
-                // Delayed a beat so startActivity() reaches the system server
-                // before we exit; killing immediately can drop the request and
-                // leave the user staring at a closed app.
-                Handler(Looper.getMainLooper()).postDelayed({
-                    Log.i(TAG, "restartApp: exiting process to pick up the new bundle")
-                    exitProcess(0)
-                }, 300)
-            } catch (e: Throwable) {
-                // Throwable, not Exception: a missing class on an unexpected
-                // Android or RN version arrives as an Error, and crashing while
-                // applying an update is the worst available outcome.
-                Log.e(TAG, "Restart failed", e)
-                promise.reject("RESTART_FAILED", e.message, e)
+        try {
+            val context = reactApplicationContext
+            // The SDK can't reference the host app's MainActivity, so take the
+            // launcher activity from the manifest — the same activity.
+            val launcher = context.packageManager
+                .getLaunchIntentForPackage(context.packageName)
+                ?.component
+            if (launcher == null) {
+                promise.reject(
+                    "NO_LAUNCH_INTENT",
+                    "No launcher activity for ${context.packageName}, so the app " +
+                        "cannot relaunch itself. Ask the user to reopen it.",
+                )
+                return
             }
+
+            val intent = Intent().apply {
+                component = launcher
+                // NEW_TASK is required to start an activity from the application
+                // context; CLEAR_TASK drops the old back stack so the relaunch
+                // starts clean.
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            }
+            Log.i(TAG, "restartApp: relaunching $launcher and exiting process")
+            context.startActivity(intent)
+            // The process dies here, so the JS promise never resolves.
+            Runtime.getRuntime().exit(0)
+        } catch (e: Exception) {
+            Log.e(TAG, "Restart failed", e)
+            promise.reject("RESTART_FAILED", e.message, e)
         }
     }
 

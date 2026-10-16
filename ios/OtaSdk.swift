@@ -278,14 +278,18 @@ class OtaSdk: RCTEventEmitter {
 
     // ── restart ──────────────────────────────────────────────────────
 
-    /// Reload so the applied bundle takes effect now.
+    /// Restart so the applied bundle takes effect now.
     ///
-    /// Unlike Android, iOS can do this without killing the process:
-    /// RCTTriggerReloadCommandListeners causes the bridge to ask its delegate
-    /// for `sourceURLForBridge:` again, so an AppDelegate that returns
-    /// OtaSdkHelper's current path picks up the new bundle. If your AppDelegate
-    /// caches that URL in a `lazy var` or stored property, it will not — the
-    /// same freeze that forces a process relaunch on Android.
+    /// Unlike Android — which relaunches the launcher activity and kills the
+    /// process — iOS cannot relaunch itself, and calling `exit()` violates
+    /// Apple's guidelines (App Review rejects it). So the strongest supported
+    /// restart is a bridge reload via RCTTriggerReloadCommandListeners, the
+    /// same mechanism as Cmd-R. The reload tears down and rebuilds the
+    /// bridge/host, which asks the AppDelegate for its bundle URL again; one
+    /// that returns `OtaSdkHelper.activeBundleURL()` promotes the pending
+    /// bundle and loads it immediately. If your AppDelegate caches that URL in
+    /// a `lazy var` or stored property, it will not — the same freeze that
+    /// forces a process relaunch on Android.
     ///
     /// Untested on a device — no iOS build of this SDK has been run yet.
     @objc func restartApp(_ resolve: @escaping RCTPromiseResolveBlock,
@@ -295,7 +299,8 @@ class OtaSdk: RCTEventEmitter {
             NSLog("[OTA] Restarting to apply bundle")
             // Resolve before triggering. The reload destroys the JS context
             // that is waiting on this promise, so resolving afterwards would
-            // deliver to an instance that no longer exists.
+            // deliver to an instance that no longer exists. Callers treat a
+            // restart as fire-and-forget.
             resolve(nil)
             RCTTriggerReloadCommandListeners("OTA bundle applied")
         }
