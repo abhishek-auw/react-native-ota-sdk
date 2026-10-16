@@ -2,6 +2,7 @@ package com.otasdk
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import java.security.MessageDigest
@@ -80,6 +81,36 @@ object DeviceInfo {
             info.versionName ?: "1.0.0"
         } catch (_: Exception) {
             "1.0.0"
+        }
+    }
+
+    /**
+     * The device as the OTA dashboard lists it: model ("SM-A515F"), brand
+     * ("samsung") and Android version ("14"). Shown only, so that a release
+     * can be limited to chosen devices, or kept from some.
+     */
+    fun getModel(): String = Build.MODEL ?: ""
+
+    fun getBrand(): String = Build.BRAND ?: ""
+
+    fun getOsVersion(): String = Build.VERSION.RELEASE ?: ""
+
+    /**
+     * Returns the app's versionCode from PackageManager, e.g. "1000028", or
+     * null if it cannot be read. The server matches it with versionName
+     * against the store versions registered for the app.
+     */
+    fun getVersionCode(context: Context): String? {
+        return try {
+            val info = context.packageManager.getPackageInfo(context.packageName, 0)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                info.longVersionCode.toString()
+            } else {
+                @Suppress("DEPRECATION")
+                info.versionCode.toString()
+            }
+        } catch (_: Exception) {
+            null
         }
     }
 }

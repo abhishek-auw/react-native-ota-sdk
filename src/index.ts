@@ -64,7 +64,13 @@ export interface UpdateInfo {
   bundleId: string;
   downloadUrl: string;
   hash: string;
+  /** Always equal to updateMode === 'forced' on servers that send updateMode. */
   mandatory: boolean;
+  /**
+   * How the server wants this installed. Absent from servers that predate
+   * update modes — fall back to `mandatory` then.
+   */
+  updateMode?: 'silent' | 'soft' | 'forced';
   releaseNotes?: string;
   /** ECDSA-SHA256 signature (base64) — present when the bundle was signed by CI */
   signature?: string;

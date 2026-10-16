@@ -45,6 +45,8 @@ class OTAApiClient {
         val downloadUrl: String,
         val hash: String,
         val mandatory: Boolean,
+        /** silent | soft | forced — null from a server that predates update modes */
+        val updateMode: String? = null,
         val releaseNotes: String?,
         /** ECDSA-SHA256 signature (base64) — present when the bundle was signed by CI */
         val signature: String? = null,
@@ -63,15 +65,24 @@ class OTAApiClient {
         currentHash: String,
         channel: String,
         deviceHash: String,
+        versionCode: String? = null,
+        deviceModel: String? = null,
+        deviceBrand: String? = null,
+        osVersion: String? = null,
     ): UpdateCheckResult {
         val body = JSONObject().apply {
             put("appId",             appId)
             put("platform",          platform)
             put("appVersion",        appVersion)
+            versionCode?.let { put("versionCode", it) }
             put("runtimeVersion",    runtimeVersion)
             put("currentBundleHash", currentHash)
             put("channel",           channel)
             put("deviceHash",        deviceHash)
+            // Listed under the app's Devices on the dashboard.
+            deviceModel?.takeIf { it.isNotBlank() }?.let { put("deviceModel", it) }
+            deviceBrand?.takeIf { it.isNotBlank() }?.let { put("deviceBrand", it) }
+            osVersion?.takeIf { it.isNotBlank() }?.let { put("osVersion", it) }
         }.toString()
 
         val request = Request.Builder()
@@ -99,6 +110,7 @@ class OTAApiClient {
                 downloadUrl  = json.getString("downloadUrl"),
                 hash         = json.getString("hash"),
                 mandatory    = json.optBoolean("mandatory", false),
+                updateMode   = json.optStringOrNull("updateMode"),
                 releaseNotes = json.optStringOrNull("releaseNotes"),
                 signature    = json.optStringOrNull("signature"),
                 patchUrl     = json.optStringOrNull("patchUrl"),

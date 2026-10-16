@@ -20,6 +20,8 @@ struct UpdatePayload {
     let downloadUrl: String
     let hash: String
     let mandatory: Bool
+    /// silent | soft | forced — nil from a server that predates update modes
+    let updateMode: String?
     let releaseNotes: String?
     /// ECDSA-SHA256 signature (base64) — present when the bundle was signed by CI
     let signature: String?
@@ -41,13 +43,17 @@ class OTAApiClient {
                         runtimeVersion: String,
                         currentHash: String,
                         channel: String,
-                        deviceHash: String) throws -> UpdateCheckResult {
+                        deviceHash: String,
+                        versionCode: String? = nil,
+                        deviceModel: String? = nil,
+                        deviceBrand: String? = nil,
+                        osVersion: String? = nil) throws -> UpdateCheckResult {
 
         guard let url = URL(string: "\(serverUrl)/v1/update/check") else {
             throw URLError(.badURL)
         }
 
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "appId":             appId,
             "platform":          platform,
             "appVersion":        appVersion,
@@ -56,6 +62,11 @@ class OTAApiClient {
             "channel":           channel,
             "deviceHash":        deviceHash,
         ]
+        if let versionCode = versionCode { payload["versionCode"] = versionCode }
+        // Listed under the app's Devices on the dashboard.
+        if let deviceModel = deviceModel, !deviceModel.isEmpty { payload["deviceModel"] = deviceModel }
+        if let deviceBrand = deviceBrand, !deviceBrand.isEmpty { payload["deviceBrand"] = deviceBrand }
+        if let osVersion = osVersion, !osVersion.isEmpty { payload["osVersion"] = osVersion }
 
         let json = try JSONSerialization.data(withJSONObject: payload)
         var request = URLRequest(url: url, timeoutInterval: 15)
@@ -94,6 +105,7 @@ class OTAApiClient {
                 downloadUrl:  downloadUrl,
                 hash:         hash,
                 mandatory:    body["mandatory"]    as? Bool   ?? false,
+                updateMode:   body["updateMode"]   as? String,
                 releaseNotes: body["releaseNotes"] as? String,
                 signature:    body["signature"]    as? String,
                 patchUrl:     body["patchUrl"]     as? String,

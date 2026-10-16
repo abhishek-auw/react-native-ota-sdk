@@ -59,6 +59,7 @@ class OtaSdk: RCTEventEmitter {
             do {
                 let deviceHash  = DeviceInfo.deviceHash()
                 let appVersion  = DeviceInfo.appVersion()
+                let buildNumber = DeviceInfo.buildNumber()
                 let runtimeVer  = DeviceInfo.runtimeVersion()
                 let currentHash = self.prefs.activeBundleHash
 
@@ -70,7 +71,11 @@ class OtaSdk: RCTEventEmitter {
                     runtimeVersion: runtimeVer,
                     currentHash: currentHash,
                     channel:     cfg.channel,
-                    deviceHash:  deviceHash
+                    deviceHash:  deviceHash,
+                    versionCode: buildNumber,
+                    deviceModel: DeviceInfo.model(),
+                    deviceBrand: DeviceInfo.brand(),
+                    osVersion:   DeviceInfo.osVersion()
                 )
 
                 var map: [String: Any] = ["updateAvailable": result.updateAvailable]
@@ -79,6 +84,7 @@ class OtaSdk: RCTEventEmitter {
                     map["downloadUrl"] = u.downloadUrl
                     map["hash"]        = u.hash
                     map["mandatory"]   = u.mandatory
+                    if let mode       = u.updateMode   { map["updateMode"]   = mode }
                     if let notes      = u.releaseNotes { map["releaseNotes"] = notes }
                     // Signing — only present when the bundle was signed by CI
                     if let signature  = u.signature  { map["signature"]  = signature }

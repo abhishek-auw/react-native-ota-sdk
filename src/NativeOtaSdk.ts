@@ -26,6 +26,8 @@ export interface UpdateCheckResult {
   downloadUrl?: string;
   hash?: string;
   mandatory?: boolean;
+  /** silent | soft | forced — absent from servers that predate update modes */
+  updateMode?: string;
   releaseNotes?: string;
   /** ECDSA-SHA256 signature (base64) — present when the bundle was signed by CI */
   signature?: string;

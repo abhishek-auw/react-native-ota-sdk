@@ -76,6 +76,7 @@ class OtaSdkModule(reactContext: ReactApplicationContext) :
             try {
                 val deviceHash   = DeviceInfo.getDeviceHash(reactApplicationContext)
                 val appVersion   = DeviceInfo.getAppVersion(reactApplicationContext)
+                val versionCode  = DeviceInfo.getVersionCode(reactApplicationContext)
                 val runtimeVer   = DeviceInfo.getRuntimeVersion(reactApplicationContext)
                 val currentHash  = prefs.activeBundleHash
 
@@ -88,6 +89,10 @@ class OtaSdkModule(reactContext: ReactApplicationContext) :
                     currentHash   = currentHash,
                     channel       = cfg.channel,
                     deviceHash    = deviceHash,
+                    versionCode   = versionCode,
+                    deviceModel   = DeviceInfo.getModel(),
+                    deviceBrand   = DeviceInfo.getBrand(),
+                    osVersion     = DeviceInfo.getOsVersion(),
                 )
 
                 val map = Arguments.createMap()
@@ -98,6 +103,7 @@ class OtaSdkModule(reactContext: ReactApplicationContext) :
                     map.putString("downloadUrl", u.downloadUrl)
                     map.putString("hash",        u.hash)
                     map.putBoolean("mandatory",  u.mandatory)
+                    u.updateMode?.let { map.putString("updateMode", it) }
                     u.releaseNotes?.let { map.putString("releaseNotes", it) }
                     // Signing — only present when the bundle was signed by CI
                     u.signature?.let  { map.putString("signature",  it) }

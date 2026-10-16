@@ -41,6 +41,33 @@ enum DeviceInfo {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
     }
 
+    /// Returns the app's CFBundleVersion, the build number (e.g. "45"), or nil.
+    /// The server matches it with the version against the store versions
+    /// registered for the app.
+    static func buildNumber() -> String? {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+    }
+
+    /// The device as the OTA dashboard lists it: model identifier
+    /// ("iPhone15,2"), brand and iOS version ("17.4"). Shown only, so that a
+    /// release can be limited to chosen devices, or kept from some.
+    static func model() -> String {
+        // The simulator reports the host's architecture; it names the
+        // simulated device in its environment instead.
+        if let simulated = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] {
+            return simulated
+        }
+        var info = utsname()
+        uname(&info)
+        return withUnsafeBytes(of: &info.machine) { raw in
+            String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+        }
+    }
+
+    static func brand() -> String { "Apple" }
+
+    static func osVersion() -> String { UIDevice.current.systemVersion }
+
     // MARK: - Private
 
     private static func sha256(_ string: String) -> String {
