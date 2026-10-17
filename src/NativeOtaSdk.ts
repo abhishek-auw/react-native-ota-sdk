@@ -16,6 +16,7 @@ export interface ConfigMap {
   serverUrl: string;
   channel: string;
   crashThreshold: number;
+  maxUnconfirmedLaunches?: number;
   /** Optional ECDSA P-256 public key (PEM SPKI) embedded at build time for bundle signature verification */
   signingPublicKey?: string;
 }
@@ -60,6 +61,8 @@ export interface SDKStatus {
   hasPending: boolean;
   pendingBundleHash: string;
   crashCount: number;
+  /** false while the active bundle awaits notifyAppReady() */
+  bundleConfirmed: boolean;
   /** Compatibility token compiled into the binary. Read-only from JS. */
   runtimeVersion: string;
 }

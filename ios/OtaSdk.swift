@@ -12,7 +12,7 @@ class OtaSdk: RCTEventEmitter {
     private let downloader  = BundleDownloader()
     private let apiClient   = OTAApiClient()
   internal lazy var otaBundleManager = BundleManager(prefs: prefs)
-    private lazy var crashGuard    = CrashGuard(prefs: prefs)
+    private lazy var crashGuard    = CrashGuard(prefs: prefs, bundleManager: otaBundleManager)
 
     // ── RCTEventEmitter ──────────────────────────────────────────────
 
@@ -34,14 +34,19 @@ class OtaSdk: RCTEventEmitter {
             serverUrl:        (configDict["serverUrl"] as? String ?? "")
                                 .replacingOccurrences(of: "/+$", with: "", options: .regularExpression),
             channel:          configDict["channel"]         as? String ?? "production",
-            crashThreshold:   configDict["crashThreshold"]  as? Int    ?? 3,
+            crashThreshold:   configDict["crashThreshold"]  as? Int    ?? OTAPrefs.defaultCrashThreshold,
             signingPublicKey: configDict["signingPublicKey"] as? String
         )
         NSLog("[OTA] Configured appId=%@ server=%@", config!.appId, config!.serverUrl)
 
-        // Run crash guard check on every app start
+        // The crash guard itself runs before JS loads (OtaSdkHelper), on the
+        // next launch — so it needs the threshold persisted.
+        prefs.crashThreshold = config!.crashThreshold
+        prefs.maxUnconfirmedLaunches = configDict["maxUnconfirmedLaunches"] as? Int
+            ?? OTAPrefs.defaultMaxUnconfirmedLaunches
+
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            self?.runCrashGuardCheck()
+            self?.reportPendingRollback()
         }
     }
 
@@ -78,8 +83,15 @@ class OtaSdk: RCTEventEmitter {
                     osVersion:   DeviceInfo.osVersion()
                 )
 
-                var map: [String: Any] = ["updateAvailable": result.updateAvailable]
-                if result.updateAvailable, let u = result.update {
+                // A bundle the crash guard rolled back is never offered again.
+                let blocked = result.update.map { self.prefs.failedBundleHashes.contains($0.hash) } ?? false
+                if blocked {
+                    NSLog("[OTA] Ignoring update %@: it was rolled back on this device",
+                          result.update?.bundleId ?? "")
+                }
+
+                var map: [String: Any] = ["updateAvailable": result.updateAvailable && !blocked]
+                if result.updateAvailable, !blocked, let u = result.update {
                     map["bundleId"]    = u.bundleId
                     map["downloadUrl"] = u.downloadUrl
                     map["hash"]        = u.hash
@@ -251,6 +263,7 @@ class OtaSdk: RCTEventEmitter {
             "hasPending":        prefs.pendingBundlePath != nil,
             "pendingBundleHash": prefs.pendingBundleHash,
             "crashCount":        prefs.crashCount,
+            "bundleConfirmed":   prefs.activeBundleConfirmed,
             // Surfaced so a device can be asked what runtime it declares.
             // Without it, a runtime_version_mismatch is invisible app-side.
             "runtimeVersion":    DeviceInfo.runtimeVersion(),
@@ -314,21 +327,25 @@ class OtaSdk: RCTEventEmitter {
 
     // ── Private ───────────────────────────────────────────────────────
 
-    private func runCrashGuardCheck() {
-        let shouldRollback = crashGuard.onAppStart()
-        if shouldRollback {
-            NSLog("[OTA] Crash guard triggered rollback")
-            otaBundleManager.rollback()
-            if let cfg = config {
-                apiClient.reportEvent(
-                    serverUrl: cfg.serverUrl, appId: cfg.appId,
-                    bundleId: prefs.activeBundleHash.isEmpty ? nil : prefs.activeBundleHash,
-                    deviceHash: DeviceInfo.deviceHash(),
-                    eventType: "crash", platform: "ios"
-                )
-            }
-            sendEvent(withName: "OTA_EVENT",
-                      body: ["type": "rollback", "reason": "crash_threshold"])
+    /// The crash guard rolls back before JS is up, so it cannot report then.
+    /// It leaves the failed bundle's id behind, and the first configure()
+    /// after the rollback sends it.
+    private func reportPendingRollback() {
+        guard let failedBundleId = prefs.rollbackToReport else { return }
+        let reason = prefs.rollbackReason.isEmpty ? "crash_threshold" : prefs.rollbackReason
+        prefs.clearRollbackToReport()
+        NSLog("[OTA] Crash guard rolled back bundle %@: %@",
+              failedBundleId.isEmpty ? "(unknown id)" : failedBundleId, reason)
+        if let cfg = config {
+            apiClient.reportEvent(
+                serverUrl: cfg.serverUrl, appId: cfg.appId,
+                bundleId: failedBundleId.isEmpty ? nil : failedBundleId,
+                deviceHash: DeviceInfo.deviceHash(),
+                eventType: "crash", platform: "ios"
+            )
         }
+        sendEvent(withName: "OTA_EVENT",
+                  body: ["type": "rollback", "reason": reason,
+                         "bundleId": failedBundleId])
     }
 }

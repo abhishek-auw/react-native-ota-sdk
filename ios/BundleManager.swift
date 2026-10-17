@@ -227,12 +227,11 @@ class BundleManager {
     func applyPendingBundle() {
         guard let pendingPath = prefs.pendingBundlePath else { return }
         let pendingId = prefs.pendingBundleId
-        prefs.activeBundlePath = pendingPath
-        prefs.activeBundleHash = prefs.pendingBundleHash
-        // Carry the id across too — clearPending() is about to drop it, and it
-        // is the only human-readable handle on what the device is running.
-        prefs.activeBundleId   = pendingId
-        prefs.clearPending()
+        // The new bundle becomes active and unconfirmed, and the bundle it
+        // replaces is kept as the crash guard's rollback target. The id is
+        // carried across too — it is the only human-readable handle on what
+        // the device is running.
+        prefs.promotePendingToActive()
         NSLog("[OTA] Bundle applied: %@ (id=%@)", pendingPath, pendingId)
     }
 
@@ -250,17 +249,31 @@ class BundleManager {
         prefs.activeBundleHash = ""
         prefs.activeBundleId   = ""
         prefs.clearPending()
+        prefs.clearPrevious()
         prefs.resetCrashCount()
     }
 
-    /// Delete all bundles except the currently active one.
+    /// Crash-guard rollback: replace the failing active bundle with the
+    /// previous good one, or with the embedded bundle when there is none or
+    /// its file is gone. The failing bundle's hash is blocklisted.
+    func rollbackToPrevious(reason: String) {
+        let previous = prefs.previousBundlePath.flatMap {
+            FileManager.default.fileExists(atPath: $0) ? $0 : nil
+        }
+        NSLog("[OTA] Rolling back bundle %@ to %@",
+              prefs.activeBundleHash, previous ?? "the embedded bundle")
+        prefs.rollBackActiveBundle(restorePath: previous, reason: reason)
+    }
+
+    /// Delete all bundles except the active one and the crash guard's
+    /// rollback target.
     func cleanOldBundles() {
-        let activeHash = prefs.activeBundleHash
+        let keep: Set<String> = [prefs.activeBundleHash, prefs.previousBundleHash]
         guard let contents = try? FileManager.default.contentsOfDirectory(
             at: otaRoot, includingPropertiesForKeys: nil
         ) else { return }
 
-        for dir in contents where dir.lastPathComponent != activeHash {
+        for dir in contents where !keep.contains(dir.lastPathComponent) {
             try? FileManager.default.removeItem(at: dir)
             NSLog("[OTA] Cleaned old bundle: %@", dir.lastPathComponent)
         }

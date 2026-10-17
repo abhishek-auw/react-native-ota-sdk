@@ -253,8 +253,8 @@ update downloaded during one session take effect on the next launch.
 ### Option A — `OTAProvider` (recommended)
 
 Wrap your app. The provider configures the SDK, checks for updates on mount,
-subscribes to native events, downloads mandatory updates automatically, and marks
-the bundle stable after 5 seconds.
+subscribes to native events, downloads mandatory updates automatically, and
+confirms the bundle (`notifyAppReady()`) after 5 seconds in the foreground.
 
 ```tsx
 import { OTAProvider } from 'react-native-ota-sdk';
@@ -280,7 +280,8 @@ export default function App() {
 |---|---|---|---|
 | `config` | `OTAConfig` | — | Required. See [Configuration](#configuration) |
 | `checkOnMount` | `boolean` | `true` | Check for an update as soon as the provider mounts |
-| `stableAfterMs` | `number` | `5000` | Call `markStable()` after this long without a crash |
+| `autoConfirm` | `boolean` | `true` | Call `notifyAppReady()` for you. Turn off to call it yourself once the app is genuinely usable |
+| `stableAfterMs` | `number` | `5000` | With `autoConfirm`, foreground time before the bundle is confirmed. Background time does not count |
 | `onActiveBundle` | `(bundle: ActiveBundleInfo) => void` | — | Reports which bundle the running JS came from. See below |
 
 #### A restart button
@@ -423,7 +424,7 @@ settings toggle — skip the provider and call the functions directly.
 import {
   configure,
   checkAndApply,
-  markStable,
+  notifyAppReady,
 } from 'react-native-ota-sdk';
 
 // Once, at startup
@@ -433,8 +434,8 @@ configure({
   channel: 'production',
 });
 
-// After your app has rendered successfully
-setTimeout(markStable, 5000);
+// Once your first screen has rendered and works
+notifyAppReady();
 
 // Whenever you want to check
 const result = await checkAndApply({
@@ -459,6 +460,7 @@ interface OTAConfig {
   serverUrl: string;          // e.g. https://ota.yourcompany.com
   channel?: string;           // default: 'production'
   crashThreshold?: number;    // default: 3
+  maxUnconfirmedLaunches?: number; // default: 5
   signingPublicKey?: string;  // PEM SPKI, ECDSA P-256
 }
 ```
@@ -466,8 +468,13 @@ interface OTAConfig {
 **`channel`** selects a release track. Point internal builds at `staging` or
 `beta` to get changes before production users do.
 
-**`crashThreshold`** is how many launches may crash before the SDK discards the
-active bundle. See [Crash guard](#crash-guard).
+**`crashThreshold`** is how many times a newly applied bundle may crash, before
+`notifyAppReady()`, until the SDK rolls it back. A fatal JS error rolls back
+after one. See [Crash guard](#crash-guard).
+
+**`maxUnconfirmedLaunches`** is how many times a newly applied bundle may be
+launched without ever reaching `notifyAppReady()` — crashing or not — before it
+is rolled back. It catches a bundle that hangs or shows a blank screen.
 
 **`signingPublicKey`**, when set, makes the SDK reject any bundle that is not
 signed by the matching private key — including unsigned ones. Generate the pair
@@ -482,8 +489,9 @@ Leaving it unset means bundles are accepted on hash alone. Set it for production
 
 ### `configure(config: OTAConfig): void`
 
-Initialises the native module and runs the crash-guard check for this launch.
-Call once, before anything else.
+Initialises the native module, saves `crashThreshold` for the crash guard, and
+reports a crash-guard rollback from the previous launch, if there was one. Call
+once, before anything else.
 
 ### `checkForUpdate(): Promise<UpdateInfo | NoUpdate>`
 
@@ -553,20 +561,25 @@ interface SDKStatus {
   activeBundlePath: string;
   hasPending: boolean;
   pendingBundleHash: string;
-  crashCount: number;
+  crashCount: number;          // crashes of the active bundle while unconfirmed
+  bundleConfirmed: boolean;    // false while awaiting notifyAppReady()
   runtimeVersion: string;
 }
 ```
 
 Useful on a debug screen when you need to know what a device is actually running.
 
-### `markStable(): void`
+### `notifyAppReady(): void`
 
-Resets the crash counter, marking the current bundle as good. Call it once your
-app has rendered and reached a usable state. `OTAProvider` does this for you.
+Confirms the current bundle as good. Call it once your app has rendered and
+reached a usable state. `OTAProvider` does this for you unless `autoConfirm` is
+off. Once confirmed, a bundle is never counted or rolled back by the crash
+guard.
 
-Forgetting to call it means every launch counts as a crash, and a perfectly good
-bundle gets rolled back on the third one.
+Forgetting to call it means a perfectly good bundle gets rolled back after
+`maxUnconfirmedLaunches` launches.
+
+`markStable()` is the old name, kept as a deprecated alias.
 
 ### `rollback(): Promise<void>`
 
@@ -603,9 +616,10 @@ e.remove();
 app launches
     │
     ├─ OtaSdkHelper promotes any pending bundle → active
+    ├─ OtaSdkHelper runs the crash guard (may roll back, before any JS runs)
     ├─ React Native loads the active OTA bundle (or the embedded one)
     │
-    ├─ configure()      → crash guard runs for this launch
+    ├─ configure()      → reports a crash-guard rollback, if any
     ├─ checkForUpdate() → server decides using channel, platform,
     │                     app version range and rollout percentage
     │
@@ -613,7 +627,7 @@ app launches
     │                     SHA-256 + signature verified natively
     ├─ applyPendingBundle()
     │
-    └─ markStable()     → after ~5s without a crash
+    └─ notifyAppReady() → app is usable: bundle confirmed
 
 next launch: the new bundle is live
 ```
@@ -625,15 +639,44 @@ this — the JavaScript runtime has to restart to pick up a different bundle.
 
 ## Crash guard
 
-The SDK counts launches that end before `markStable()` is called. Reaching
-`crashThreshold` (default 3) discards the active OTA bundle and clears OTA state,
-so the next launch loads the bundle shipped in your binary.
+A newly applied bundle starts **unconfirmed**, and stays that way until
+`notifyAppReady()` is called. While it is unconfirmed, the SDK looks at how
+each session ended. Before any JS runs, it rolls the bundle back — loading the
+previous good OTA bundle, or the one shipped in your binary if there is none —
+when:
+
+| What happened | Rolled back after | `reason` |
+|---|---|---|
+| A fatal JS error killed the app | 1 | `js_fatal` |
+| The app crashed (died in the foreground, or Android recorded a crash or ANR) | `crashThreshold` (3) | `crash_threshold` |
+| The app was launched but never reached `notifyAppReady()` | `maxUnconfirmedLaunches` (5) | `not_confirmed` |
+
+How a crash is told apart from the user closing the app:
+
+- The SDK notes when the app is in the foreground. A process that dies while
+  in the foreground crashed. Swiping the app away always backgrounds it first,
+  so it is never counted as a crash.
+- On Android 11+, the exit reason the OS recorded (`ApplicationExitInfo`) is
+  also checked, which catches native crashes and ANRs.
+- A fatal JS error is caught by the native crash handler before the process
+  dies — `JavascriptException` on Android, `RCTFatalException` on iOS. Other
+  crash reporters keep working; the SDK hands the crash on unchanged.
+
+Also:
+
+- The check runs in `OtaSdkHelper`, so it catches a bundle that crashes before
+  your JS gets as far as `configure()`.
+- A process started in the background (headless JS, a push handler) is not
+  counted as a launch.
+- A confirmed bundle is never counted or rolled back.
+- The rolled-back bundle is blocklisted on the device: `checkForUpdate()` will
+  not offer it again.
+- The rollback is reported as a `crash` event, with the failed bundle's id, on
+  the first `configure()` after it, and emitted as an `OTA_EVENT` of type
+  `rollback` with the `reason`.
 
 This runs entirely on the device. It works even if the OTA server is unreachable,
-and requires nothing from your code beyond calling `markStable()` at the right
-moment.
-
-Applying a new bundle resets the counter.
+and requires nothing from your code beyond `notifyAppReady()` being reached.
 
 ---
 
@@ -797,8 +840,9 @@ adb shell run-as <your.package> \
 JavaScript, and that is your regression.
 
 **A good bundle keeps rolling back**
-`markStable()` is not being reached — often because it sits behind a screen the
-user has not opened, or the app crashes before it. Move it earlier.
+`notifyAppReady()` is not being reached — often because it sits behind a screen
+the user has not opened, or the app crashes before it. Move it earlier. The
+`reason` on the `rollback` event tells you which limit was hit.
 
 **`checkForUpdate()` rejects with `NOT_CONFIGURED`**
 `configure()` has not run yet. If you are using `OTAProvider`, make sure nothing

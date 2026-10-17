@@ -47,7 +47,18 @@ export interface OTAConfig {
   appId: string;
   serverUrl: string;
   channel?: string;
+  /**
+   * How many crashes a newly applied bundle may have before it is rolled
+   * back, while it awaits `notifyAppReady()`. A fatal JS error rolls back
+   * after one. Default: 3.
+   */
   crashThreshold?: number;
+  /**
+   * How many times a newly applied bundle may be launched without ever
+   * reaching `notifyAppReady()` — crash or no crash — before it is rolled
+   * back. Catches a bundle that hangs or shows a blank screen. Default: 5.
+   */
+  maxUnconfirmedLaunches?: number;
   /**
    * Optional ECDSA P-256 public key (PEM SPKI format), embedded in the app at build time.
    * When provided, every bundle downloaded from the server must carry a valid signature.
@@ -96,7 +107,13 @@ export interface SDKStatus {
   activeBundlePath: string;
   hasPending: boolean;
   pendingBundleHash: string;
+  /** Crashes of the active bundle since it was applied, while unconfirmed. */
   crashCount: number;
+  /**
+   * false while the active bundle is new and awaiting `notifyAppReady()`;
+   * true once confirmed, and for the embedded bundle.
+   */
+  bundleConfirmed: boolean;
   /**
    * The JS-to-native compatibility token this binary declares, read from
    * AndroidManifest meta-data or Info.plist. Not settable from JS — see the
@@ -137,7 +154,11 @@ export type OTANativeEvent =
   | { type: 'download_complete'; bundleId: string; bundlePath: string; delta: boolean }
   | { type: 'download_failed'; error: string }
   | { type: 'bundle_applied'; path: string }
-  | { type: 'rollback'; reason?: string };
+  /**
+   * reason is `js_fatal`, `crash_threshold` or `not_confirmed` for a crash-guard
+   * rollback (with the failed bundleId), absent for a manual rollback().
+   */
+  | { type: 'rollback'; reason?: string; bundleId?: string };
 
 // ── Core API ──────────────────────────────────────────────────────────
 
@@ -155,6 +176,7 @@ export function configure(config: OTAConfig): void {
     serverUrl:        config.serverUrl.replace(/\/+$/, ''),
     channel:          config.channel ?? 'production',
     crashThreshold:   config.crashThreshold ?? 3,
+    maxUnconfirmedLaunches: config.maxUnconfirmedLaunches ?? 5,
     signingPublicKey: config.signingPublicKey ?? null,
   });
 }
@@ -232,11 +254,25 @@ export function getStatus(): Promise<SDKStatus> {
 }
 
 /**
- * Call this once your app has been running stably for ~5 seconds.
- * Resets the crash counter and reports install_ok to analytics.
+ * Tell the SDK the app is up and working on this bundle.
+ *
+ * Confirms the active bundle — the crash guard then stops watching it and
+ * will never roll it back — and reports install_ok to analytics. Until it is
+ * called, a newly applied bundle is rolled back after one fatal JS error,
+ * `crashThreshold` crashes, or `maxUnconfirmedLaunches` launches.
+ *
+ * `OTAProvider` calls it for you (see `autoConfirm`). Call it yourself at the
+ * point your app is genuinely usable — first screen rendered, first API call
+ * answered — for a stronger guarantee than a timer.
  */
-export function markStable(): void {
+export function notifyAppReady(): void {
+  assertNative();
   OtaSdk.markStable();
+}
+
+/** @deprecated Renamed to {@link notifyAppReady}. */
+export function markStable(): void {
+  notifyAppReady();
 }
 
 /**
