@@ -269,6 +269,28 @@ class BundleManager(private val context: Context, private val prefs: OTAPrefs) {
     fun getActiveBundlePath(): String? = prefs.activeBundlePath
 
     /**
+     * Why the bundle at [path] cannot be loaded by this app, or null when it
+     * looks loadable. Reads a few hundred bytes; it never loads the bundle.
+     */
+    fun bundleProblem(path: String): String? = try {
+        BundleFileCheck.problem(File(path), appHermesVersion())
+    } catch (e: Exception) {
+        "the bundle file cannot be read: ${e.message}"
+    }
+
+    /**
+     * Hermes bytecode version of the bundle packaged in the APK — the Hermes
+     * this app runs — or null when it is not bytecode or not found.
+     */
+    private fun appHermesVersion(): Int? = try {
+        context.assets.open("index.android.bundle").use {
+            BundleFileCheck.hermesVersion(BundleFileCheck.readHead(it))
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    /**
      * Roll back to the original bundled asset (clear all OTA state).
      */
     fun rollback() {

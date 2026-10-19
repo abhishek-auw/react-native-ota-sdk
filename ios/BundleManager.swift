@@ -242,6 +242,20 @@ class BundleManager {
         return FileManager.default.fileExists(atPath: path) ? url : nil
     }
 
+    /// Why the bundle at `path` cannot be loaded by this app, or nil when it
+    /// looks loadable. Reads a few hundred bytes; it never loads the bundle.
+    func bundleProblem(path: String) -> String? {
+        BundleFileCheck.problem(path: path, appHermesVersion: appHermesVersion())
+    }
+
+    /// Hermes bytecode version of the main.jsbundle shipped in the app — the
+    /// Hermes this app runs — or nil when it is not bytecode or not found.
+    private func appHermesVersion() -> UInt32? {
+        guard let path = Bundle.main.path(forResource: "main", ofType: "jsbundle"),
+              let head = BundleFileCheck.readHead(path: path) else { return nil }
+        return BundleFileCheck.hermesVersion(head)
+    }
+
     /// Full rollback — clear all OTA state.
     func rollback() {
         NSLog("[OTA] Rolling back to embedded bundle")

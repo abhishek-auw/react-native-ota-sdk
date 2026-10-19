@@ -48,14 +48,21 @@ export interface OTAConfig {
   serverUrl: string;
   channel?: string;
   /**
-   * How many crashes a newly applied bundle may have before it is rolled
-   * back, while it awaits `notifyAppReady()`. A fatal JS error rolls back
-   * after one. Default: 3.
+   * Also roll back a new bundle that starts but then crashes, before
+   * `notifyAppReady()`. Default: false — only a broken bundle (one that cannot
+   * load or never starts) is rolled back, and a crash while the app is in use
+   * is left alone: it is a bug in the app, not a broken bundle.
+   *
+   * With it on: a fatal JS error rolls back after one, other crashes after
+   * `crashThreshold`, and a bundle never confirmed after
+   * `maxUnconfirmedLaunches` launches.
    */
+  rollbackOnCrash?: boolean;
+  /** With `rollbackOnCrash`: crashes allowed before rollback. Default: 3. */
   crashThreshold?: number;
   /**
-   * How many times a newly applied bundle may be launched without ever
-   * reaching `notifyAppReady()` — crash or no crash — before it is rolled
+   * With `rollbackOnCrash`: how many times a newly applied bundle may be
+   * launched without ever reaching `notifyAppReady()` before it is rolled
    * back. Catches a bundle that hangs or shows a blank screen. Default: 5.
    */
   maxUnconfirmedLaunches?: number;
@@ -155,8 +162,9 @@ export type OTANativeEvent =
   | { type: 'download_failed'; error: string }
   | { type: 'bundle_applied'; path: string }
   /**
-   * reason is `js_fatal`, `crash_threshold` or `not_confirmed` for a crash-guard
-   * rollback (with the failed bundleId), absent for a manual rollback().
+   * reason is `bundle_invalid`, `bundle_load_failed`, `js_fatal`,
+   * `crash_threshold` or `not_confirmed` for a crash-guard rollback (with the
+   * failed bundleId), absent for a manual rollback().
    */
   | { type: 'rollback'; reason?: string; bundleId?: string };
 
@@ -177,6 +185,7 @@ export function configure(config: OTAConfig): void {
     channel:          config.channel ?? 'production',
     crashThreshold:   config.crashThreshold ?? 3,
     maxUnconfirmedLaunches: config.maxUnconfirmedLaunches ?? 5,
+    rollbackOnCrash:  config.rollbackOnCrash ?? false,
     signingPublicKey: config.signingPublicKey ?? null,
   });
 }

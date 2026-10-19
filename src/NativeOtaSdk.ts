@@ -17,6 +17,7 @@ export interface ConfigMap {
   channel: string;
   crashThreshold: number;
   maxUnconfirmedLaunches?: number;
+  rollbackOnCrash?: boolean;
   /** Optional ECDSA P-256 public key (PEM SPKI) embedded at build time for bundle signature verification */
   signingPublicKey?: string;
 }

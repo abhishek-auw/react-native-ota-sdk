@@ -186,6 +186,7 @@ object OtaSdkHelper {
                 if (!launchCounted) {
                     launchCounted = true
                     crashGuard.recordLaunchAttempt()
+                    crashGuard.onBundleLoading()
                 }
                 crashGuard.onForeground()
             }

@@ -3,7 +3,18 @@ import Foundation
 /// Detects a newly applied bundle that is failing and rolls back to the
 /// previous good bundle before it is loaded again.
 ///
-/// Strategy ("confirm or revert"):
+/// A broken bundle — one that cannot load at all — is handled first:
+///  - Before every load, the bundle file is checked (`BundleFileCheck`):
+///    missing, empty, truncated, built for another Hermes, or binary junk.
+///    Such a bundle is rolled back on that same launch, before React Native
+///    tries it, so the app never crashes on it. Confirmed bundles too: a file
+///    damaged on disk is no more loadable for having worked before.
+///  - A bundle that was loaded but whose JS never reached configure() before
+///    the app died failed to load, and is rolled back on the next launch.
+///
+/// Only with rollbackOnCrash on (off by default — a crash while the app is in
+/// use is a bug in the app, not a broken bundle), a bundle that starts but
+/// then misbehaves is rolled back too ("confirm or revert"):
 ///  - A newly applied bundle starts unconfirmed. notifyAppReady() confirms it
 ///    (`markStable`); a confirmed bundle is never counted or rolled back.
 ///  - While unconfirmed, each session's ending is classified on the next
@@ -38,10 +49,15 @@ class CrashGuard {
         self.bundleManager = bundleManager
     }
 
-    static func evaluateLaunch(hasOtaBundle: Bool, confirmed: Bool, diedOfJsFatal: Bool,
+    static let reasonBundleInvalid = "bundle_invalid"
+
+    static func evaluateLaunch(hasOtaBundle: Bool, confirmed: Bool, failedToStart: Bool,
+                               rollbackOnCrash: Bool, diedOfJsFatal: Bool,
                                crashes: Int, launches: Int,
                                crashThreshold: Int, maxUnconfirmedLaunches: Int) -> Decision {
         if !hasOtaBundle || confirmed { return .notGuarded }
+        if failedToStart { return .rollBack(reason: "bundle_load_failed") }
+        if !rollbackOnCrash { return .load }
         if diedOfJsFatal { return .rollBack(reason: "js_fatal") }
         if crashes >= max(crashThreshold, 1) { return .rollBack(reason: "crash_threshold") }
         if launches >= max(maxUnconfirmedLaunches, 1) { return .rollBack(reason: "not_confirmed") }
@@ -58,7 +74,14 @@ class CrashGuard {
         let diedInForeground = prefs.sessionInForeground
         guard guarded else {
             if diedInForeground { prefs.sessionInForeground = false }
+            if prefs.awaitingJsStart { prefs.awaitingJsStart = false }
             return
+        }
+        if prefs.awaitingJsStart {
+            NSLog("[OTA-CrashGuard] Bundle %@ was loaded but its JS never started",
+                  prefs.activeBundleHash)
+            prefs.loadFailedHash = prefs.activeBundleHash
+            prefs.awaitingJsStart = false
         }
         let crashed = diedInForeground || prefs.fatalJsCrashHash == prefs.activeBundleHash
         prefs.endPreviousSession(crashed: crashed)
@@ -71,10 +94,23 @@ class CrashGuard {
     /// Call before React Native loads the bundle. Returns true if it rolled
     /// back; the active bundle path has then changed.
     func checkBeforeLoad() -> Bool {
+        var rolledBack = false
+        // Each rollback clears the rollback target, so this ends on the
+        // embedded bundle at worst.
+        while let path = prefs.activeBundlePath, let problem = bundleManager.bundleProblem(path: path) {
+            NSLog("[OTA-CrashGuard] Rolling back bundle %@: it cannot load — %@",
+                  prefs.activeBundleHash, problem)
+            bundleManager.rollbackToPrevious(reason: CrashGuard.reasonBundleInvalid)
+            rolledBack = true
+        }
+        if rolledBack { return true }
+
         let activeHash = prefs.activeBundleHash
         let decision = CrashGuard.evaluateLaunch(
             hasOtaBundle:           prefs.activeBundlePath != nil,
             confirmed:              prefs.activeBundleConfirmed,
+            failedToStart:          !activeHash.isEmpty && prefs.loadFailedHash == activeHash,
+            rollbackOnCrash:        prefs.rollbackOnCrash,
             diedOfJsFatal:          !activeHash.isEmpty && prefs.fatalJsCrashHash == activeHash,
             crashes:                prefs.crashCount,
             launches:               prefs.launchCount,
@@ -106,6 +142,18 @@ class CrashGuard {
     /// The app went to the background: dying from here on is not a crash of this session.
     func onBackground() {
         if prefs.sessionInForeground { prefs.sessionInForeground = false }
+        if prefs.awaitingJsStart { prefs.awaitingJsStart = false }
+    }
+
+    /// The bundle is about to be loaded. Until `onJsStarted`, dying means the
+    /// bundle failed to load.
+    func onBundleLoading() {
+        if guarded { prefs.awaitingJsStart = true }
+    }
+
+    /// The bundle's JS is running: it got as far as configure().
+    func onJsStarted() {
+        if prefs.awaitingJsStart { prefs.awaitingJsStart = false }
     }
 
     /// A fatal JS error is about to kill the process.

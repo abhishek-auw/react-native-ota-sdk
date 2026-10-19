@@ -459,6 +459,7 @@ interface OTAConfig {
   appId: string;              // UUID from the OTA dashboard
   serverUrl: string;          // e.g. https://ota.yourcompany.com
   channel?: string;           // default: 'production'
+  rollbackOnCrash?: boolean;  // default: false
   crashThreshold?: number;    // default: 3
   maxUnconfirmedLaunches?: number; // default: 5
   signingPublicKey?: string;  // PEM SPKI, ECDSA P-256
@@ -468,13 +469,20 @@ interface OTAConfig {
 **`channel`** selects a release track. Point internal builds at `staging` or
 `beta` to get changes before production users do.
 
-**`crashThreshold`** is how many times a newly applied bundle may crash, before
-`notifyAppReady()`, until the SDK rolls it back. A fatal JS error rolls back
-after one. See [Crash guard](#crash-guard).
+**`rollbackOnCrash`** also rolls back a new bundle that starts but then crashes
+before `notifyAppReady()`. Off by default: only a broken bundle — one that cannot
+load or never starts — is rolled back, and a crash while the app is in use (a
+tap on a screen, an image that fails) is left alone, since it is a bug in the
+app, not a broken bundle. See [Crash guard](#crash-guard).
 
-**`maxUnconfirmedLaunches`** is how many times a newly applied bundle may be
-launched without ever reaching `notifyAppReady()` — crashing or not — before it
-is rolled back. It catches a bundle that hangs or shows a blank screen.
+**`crashThreshold`** (with `rollbackOnCrash`) is how many times a newly applied
+bundle may crash, before `notifyAppReady()`, until the SDK rolls it back. A
+fatal JS error rolls back after one.
+
+**`maxUnconfirmedLaunches`** (with `rollbackOnCrash`) is how many times a newly
+applied bundle may be launched without ever reaching `notifyAppReady()` —
+crashing or not — before it is rolled back. It catches a bundle that hangs or
+shows a blank screen.
 
 **`signingPublicKey`**, when set, makes the SDK reject any bundle that is not
 signed by the matching private key — including unsigned ones. Generate the pair
@@ -576,8 +584,8 @@ reached a usable state. `OTAProvider` does this for you unless `autoConfirm` is
 off. Once confirmed, a bundle is never counted or rolled back by the crash
 guard.
 
-Forgetting to call it means a perfectly good bundle gets rolled back after
-`maxUnconfirmedLaunches` launches.
+With `rollbackOnCrash` on, forgetting to call it means a perfectly good bundle
+gets rolled back after `maxUnconfirmedLaunches` launches.
 
 `markStable()` is the old name, kept as a deprecated alias.
 
@@ -638,6 +646,22 @@ this — the JavaScript runtime has to restart to pick up a different bundle.
 ---
 
 ## Crash guard
+
+A **broken bundle** — one that cannot load at all — is caught before it can
+crash anything:
+
+| What is wrong | Rolled back | `reason` |
+|---|---|---|
+| The bundle file is missing, empty, truncated, built for a different Hermes than the app runs, or binary junk | On the same launch, before React Native tries it — no crash | `bundle_invalid` |
+| The bundle was loaded, but the app died before its JS reached `configure()` | On the next launch, after that one failure | `bundle_load_failed` |
+
+The file check reads only the bundle's first few hundred bytes. It runs on
+every launch, for confirmed bundles too: a file damaged on disk is no more
+loadable for having worked before.
+
+A crash while the app is in use is **not** a broken bundle, and by default is
+never rolled back. Turn on `rollbackOnCrash` to also roll back a new bundle that
+starts but then crashes:
 
 A newly applied bundle starts **unconfirmed**, and stays that way until
 `notifyAppReady()` is called. While it is unconfirmed, the SDK looks at how

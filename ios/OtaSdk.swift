@@ -41,7 +41,11 @@ class OtaSdk: RCTEventEmitter {
 
         // The crash guard itself runs before JS loads (OtaSdkHelper), on the
         // next launch — so it needs the threshold persisted.
+        // The bundle's JS is running: it did not fail to load.
+        crashGuard.onJsStarted()
+
         prefs.crashThreshold = config!.crashThreshold
+        prefs.rollbackOnCrash = configDict["rollbackOnCrash"] as? Bool ?? false
         prefs.maxUnconfirmedLaunches = configDict["maxUnconfirmedLaunches"] as? Int
             ?? OTAPrefs.defaultMaxUnconfirmedLaunches
 

@@ -1,5 +1,9 @@
 # CrashGuard redesign
 
+> **Broken bundles (added after Phase 2):** before every load the bundle file is checked (missing, empty, truncated, wrong Hermes version, binary junk) and rolled back on the same launch with reason `bundle_invalid`. A bundle whose JS never reaches `configure()` before the app dies is rolled back on the next launch with `bundle_load_failed`.
+>
+> **Default since then:** only broken bundles roll back. The crash-based rollbacks (`js_fatal`, `crash_threshold`, `not_confirmed`) only run with `rollbackOnCrash: true` in the config, because a crash while the app is in use is a bug in the app, not a broken bundle.
+>
 > **Status:** Phase 1 and Phase 2 implemented. As built, Phase 2 differs from the plan below in two ways:
 > - Fatal JS errors are caught by the native crash handlers (`JavascriptException` / `RCTFatalException`), not an `ErrorUtils` hook. In release builds React Native turns a fatal JS error into that native crash anyway, and the native handlers write synchronously.
 > - A bundle that never confirms but never crashes is caught by `maxUnconfirmedLaunches` (default 5).

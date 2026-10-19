@@ -59,6 +59,9 @@ nonisolated(unsafe) private var previousExceptionHandler: (@convention(c) (NSExc
             NSLog("[OTA] Crash guard rolled back — loading %@",
                   prefs.activeBundlePath ?? "the embedded bundle")
         }
+        // iOS loads the bundle as soon as it is asked for its URL, and runs
+        // the app's JS even on a background launch, so configure() follows.
+        crashGuard.onBundleLoading()
 
         launchCounted = false
         if firstLoadInProcess {

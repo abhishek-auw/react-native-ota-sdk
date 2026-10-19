@@ -78,6 +78,20 @@ class OTAPrefs(context: Context) {
         get() = prefs.getBoolean(KEY_SESSION_FOREGROUND, false)
         set(v) { prefs.edit().putBoolean(KEY_SESSION_FOREGROUND, v).commit() }
 
+    /**
+     * True from the moment an unconfirmed bundle is loaded with the app in
+     * the foreground until its JS reaches configure(). Still true on the next
+     * launch means the bundle never started: it failed to load.
+     */
+    var awaitingJsStart: Boolean
+        get() = prefs.getBoolean(KEY_AWAITING_JS_START, false)
+        set(v) { prefs.edit().putBoolean(KEY_AWAITING_JS_START, v).commit() }
+
+    /** Hash of the bundle whose last launch never got its JS started, or "". */
+    var loadFailedHash: String
+        get() = prefs.getString(KEY_LOAD_FAILED_HASH, "") ?: ""
+        set(v) { prefs.edit().putString(KEY_LOAD_FAILED_HASH, v).commit() }
+
     /** Hash of the bundle that last died of a fatal JS error, or "". */
     var fatalJsCrashHash: String
         get() = prefs.getString(KEY_FATAL_JS_HASH, "") ?: ""
@@ -104,6 +118,15 @@ class OTAPrefs(context: Context) {
         get() = prefs.getInt(KEY_CRASH_THRESHOLD, DEFAULT_CRASH_THRESHOLD)
         set(v) = prefs.edit().putInt(KEY_CRASH_THRESHOLD, v).apply()
 
+    /**
+     * Whether a bundle that starts but then crashes is rolled back too.
+     * Saved from configure(), like [crashThreshold]. Off by default: a crash
+     * while the app is in use is a bug in the app, not a broken bundle.
+     */
+    var rollbackOnCrash: Boolean
+        get() = prefs.getBoolean(KEY_ROLLBACK_ON_CRASH, false)
+        set(v) = prefs.edit().putBoolean(KEY_ROLLBACK_ON_CRASH, v).apply()
+
     /** Saved from configure(), like [crashThreshold]. */
     var maxUnconfirmedLaunches: Int
         get() = prefs.getInt(KEY_MAX_UNCONFIRMED, DEFAULT_MAX_UNCONFIRMED_LAUNCHES)
@@ -121,7 +144,10 @@ class OTAPrefs(context: Context) {
     val rollbackToReport: String?
         get() = prefs.getString(KEY_ROLLBACK_REPORT, null)
 
-    /** Why that rollback happened: js_fatal, crash_threshold or not_confirmed. */
+    /**
+     * Why that rollback happened: bundle_invalid, bundle_load_failed,
+     * js_fatal, crash_threshold or not_confirmed.
+     */
     val rollbackReason: String
         get() = prefs.getString(KEY_ROLLBACK_REASON, "") ?: ""
 
@@ -201,7 +227,9 @@ class OTAPrefs(context: Context) {
         edit.putInt(KEY_CRASH_COUNT, 0)
             .putInt(KEY_LAUNCH_COUNT, 0)
             .putBoolean(KEY_SESSION_FOREGROUND, false)
+            .putBoolean(KEY_AWAITING_JS_START, false)
             .remove(KEY_FATAL_JS_HASH)
+            .remove(KEY_LOAD_FAILED_HASH)
 
     fun clearPending() {
         prefs.edit()
@@ -248,7 +276,10 @@ class OTAPrefs(context: Context) {
         private const val KEY_LAUNCH_COUNT     = "launch_count"
         private const val KEY_SESSION_FOREGROUND = "session_in_foreground"
         private const val KEY_FATAL_JS_HASH    = "fatal_js_crash_hash"
+        private const val KEY_AWAITING_JS_START = "awaiting_js_start"
+        private const val KEY_LOAD_FAILED_HASH = "load_failed_hash"
         private const val KEY_LAST_EXIT_TS     = "last_seen_exit_timestamp"
         private const val KEY_MAX_UNCONFIRMED  = "max_unconfirmed_launches"
+        private const val KEY_ROLLBACK_ON_CRASH = "rollback_on_crash"
     }
 }

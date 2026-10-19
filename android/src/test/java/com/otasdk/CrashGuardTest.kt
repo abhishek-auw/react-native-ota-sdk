@@ -27,7 +27,11 @@ class CrashGuardTest {
         crashGuard = CrashGuard(prefs, bundleManager)
         every { prefs.crashThreshold } returns 3
         every { prefs.maxUnconfirmedLaunches } returns 5
+        every { prefs.rollbackOnCrash } returns true
         every { prefs.fatalJsCrashHash } returns ""
+        every { prefs.loadFailedHash } returns ""
+        every { prefs.awaitingJsStart } returns false
+        every { bundleManager.bundleProblem(any()) } returns null
     }
 
     @After
@@ -46,13 +50,15 @@ class CrashGuardTest {
     private fun evaluate(
         hasOtaBundle: Boolean = true,
         confirmed: Boolean = false,
+        failedToStart: Boolean = false,
+        rollbackOnCrash: Boolean = true,
         diedOfJsFatal: Boolean = false,
         crashes: Int = 0,
         launches: Int = 0,
         crashThreshold: Int = 3,
         maxUnconfirmedLaunches: Int = 5,
     ) = CrashGuard.evaluateLaunch(
-        hasOtaBundle, confirmed, diedOfJsFatal, crashes, launches, crashThreshold, maxUnconfirmedLaunches,
+        hasOtaBundle, confirmed, failedToStart, rollbackOnCrash, diedOfJsFatal, crashes, launches, crashThreshold, maxUnconfirmedLaunches,
     )
 
     // ── evaluateLaunch ────────────────────────────────────────────────
@@ -70,6 +76,26 @@ class CrashGuardTest {
     @Test
     fun `evaluateLaunch loads an unconfirmed bundle within its limits`() {
         assertEquals(Decision.LOAD, evaluate(crashes = 2, launches = 4))
+    }
+
+    @Test
+    fun `evaluateLaunch rolls back a bundle that failed to start`() {
+        assertEquals(Decision.ROLL_BACK_LOAD_FAILED, evaluate(failedToStart = true))
+    }
+
+    @Test
+    fun `without rollbackOnCrash, crashes after the bundle started never roll back`() {
+        assertEquals(Decision.LOAD, evaluate(rollbackOnCrash = false, diedOfJsFatal = true))
+        assertEquals(Decision.LOAD, evaluate(rollbackOnCrash = false, crashes = 99))
+        assertEquals(Decision.LOAD, evaluate(rollbackOnCrash = false, launches = 99))
+    }
+
+    @Test
+    fun `without rollbackOnCrash, a bundle that failed to start still rolls back`() {
+        assertEquals(
+            Decision.ROLL_BACK_LOAD_FAILED,
+            evaluate(rollbackOnCrash = false, failedToStart = true, crashes = 1),
+        )
     }
 
     @Test
@@ -136,6 +162,70 @@ class CrashGuardTest {
         verify { prefs.sessionInForeground = false }
     }
 
+    // ── Broken bundles ────────────────────────────────────────────────
+
+    @Test
+    fun `a bundle that cannot load is rolled back before it is tried`() {
+        activeBundle(confirmed = false)
+        var path: String? = "/ota/abc/index.android.bundle"
+        every { prefs.activeBundlePath } answers { path }
+        every { bundleManager.bundleProblem("/ota/abc/index.android.bundle") } returns "truncated"
+        every { bundleManager.rollbackToPrevious(any()) } answers { path = "/ota/good/index.android.bundle" }
+
+        assertTrue(crashGuard.checkBeforeLoad())
+        verify(exactly = 1) { bundleManager.rollbackToPrevious("bundle_invalid") }
+    }
+
+    @Test
+    fun `a confirmed bundle damaged on disk is rolled back too`() {
+        activeBundle(confirmed = true)
+        var path: String? = "/ota/abc/index.android.bundle"
+        every { prefs.activeBundlePath } answers { path }
+        every { bundleManager.bundleProblem(any()) } returns "the bundle file is missing"
+        every { bundleManager.rollbackToPrevious(any()) } answers { path = null }
+
+        assertTrue(crashGuard.checkBeforeLoad())
+        verify { bundleManager.rollbackToPrevious("bundle_invalid") }
+    }
+
+    @Test
+    fun `a broken rollback target is rolled past, to the packaged bundle`() {
+        activeBundle(confirmed = false)
+        val paths = ArrayDeque(listOf<String?>("/ota/abc/b", "/ota/prev/b", null))
+        every { prefs.activeBundlePath } answers { paths.first() }
+        every { bundleManager.bundleProblem(any()) } returns "corrupt"
+        every { bundleManager.rollbackToPrevious(any()) } answers { paths.removeFirst() }
+
+        assertTrue(crashGuard.checkBeforeLoad())
+        verify(exactly = 2) { bundleManager.rollbackToPrevious("bundle_invalid") }
+    }
+
+    @Test
+    fun `a bundle whose JS never started is rolled back after one launch`() {
+        activeBundle(confirmed = false)
+        var awaiting = true
+        var failedHash = ""
+        every { prefs.awaitingJsStart } answers { awaiting }
+        every { prefs.awaitingJsStart = any() } answers { awaiting = firstArg() }
+        every { prefs.loadFailedHash } answers { failedHash }
+        every { prefs.loadFailedHash = any() } answers { failedHash = firstArg() }
+
+        crashGuard.recordPreviousSession(exitRecordedAsCrash = false)
+
+        assertTrue(crashGuard.checkBeforeLoad())
+        verify { bundleManager.rollbackToPrevious("bundle_load_failed") }
+    }
+
+    @Test
+    fun `going to the background before JS starts is not a load failure`() {
+        activeBundle(confirmed = false)
+        every { prefs.awaitingJsStart } returns true
+
+        crashGuard.onBackground()
+
+        verify { prefs.awaitingJsStart = false }
+    }
+
     // ── checkBeforeLoad ───────────────────────────────────────────────
 
     @Test
@@ -144,6 +234,16 @@ class CrashGuardTest {
 
         assertTrue(crashGuard.checkBeforeLoad())
         verify { bundleManager.rollbackToPrevious("crash_threshold") }
+    }
+
+    @Test
+    fun `by default a crash while the app is in use does not roll back`() {
+        activeBundle(confirmed = false, crashes = 3)
+        every { prefs.rollbackOnCrash } returns false
+        every { prefs.fatalJsCrashHash } returns "abc"
+
+        assertFalse(crashGuard.checkBeforeLoad())
+        verify(exactly = 0) { bundleManager.rollbackToPrevious(any()) }
     }
 
     @Test
