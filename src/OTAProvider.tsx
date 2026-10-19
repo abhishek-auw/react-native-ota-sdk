@@ -25,13 +25,14 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import { AppState } from 'react-native';
 import {
   configure,
   checkForUpdate,
   downloadBundle,
   applyPendingBundle,
   getStatus,
-  markStable,
+  notifyAppReady,
   onDownloadProgress,
   onOTAEvent,
   restartApp,
@@ -82,7 +83,19 @@ interface OTAProviderProps {
   children: React.ReactNode;
   /** Auto-check for updates when component mounts. Default: true */
   checkOnMount?: boolean;
-  /** Mark app as stable after this many ms. Default: 5000 */
+  /**
+   * Call `notifyAppReady()` once the app has rendered and spent
+   * `stableAfterMs` in the foreground. Default: true.
+   *
+   * Turn it off to call `notifyAppReady()` yourself, at the point your app is
+   * genuinely usable (first screen rendered, first API call answered) — a
+   * stronger signal than time passing.
+   */
+  autoConfirm?: boolean;
+  /**
+   * With autoConfirm, how long the app must be in the foreground before the
+   * bundle is confirmed. Time in the background does not count. Default: 5000
+   */
   stableAfterMs?: number;
   /**
    * Called once on mount with the bundle the running JS was loaded from —
@@ -118,6 +131,7 @@ export function OTAProvider({
   config,
   children,
   checkOnMount = true,
+  autoConfirm = true,
   stableAfterMs = 5000,
   onActiveBundle,
   onBeforeRestart,
@@ -133,6 +147,9 @@ export function OTAProvider({
   // re-running when the caller passes a fresh object literal each render.
   const configRef = useRef(config);
   configRef.current = config;
+
+  const autoConfirmRef = useRef(autoConfirm);
+  autoConfirmRef.current = autoConfirm;
 
   const stableAfterMsRef = useRef(stableAfterMs);
   stableAfterMsRef.current = stableAfterMs;
@@ -179,14 +196,41 @@ export function OTAProvider({
       if (event.type === 'rollback')         setStatus('idle');
     });
 
-    // Mark stable after stableAfterMs
-    const timer = setTimeout(() => markStable(), stableAfterMsRef.current);
+    // Confirm the bundle once the app has rendered (effects run after the
+    // first commit) and spent stableAfterMs in the foreground. The clock stops
+    // in the background: a bundle the user never actually used is not proven.
+    let remaining = stableAfterMsRef.current;
+    let startedAt = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const resume = () => {
+      if (timer || remaining <= 0) return;
+      startedAt = Date.now();
+      timer = setTimeout(() => {
+        timer = null;
+        remaining = 0;
+        notifyAppReady();
+      }, remaining);
+    };
+    const pause = () => {
+      if (!timer) return;
+      clearTimeout(timer);
+      timer = null;
+      remaining -= Date.now() - startedAt;
+    };
+    const appStateSub = autoConfirmRef.current
+      ? AppState.addEventListener('change', (state) => {
+          if (state === 'active') resume();
+          else if (state === 'background') pause();
+        })
+      : null;
+    if (autoConfirmRef.current && AppState.currentState !== 'background') resume();
 
     return () => {
       disposed = true;
       progressSub.remove();
       eventSub.remove();
-      clearTimeout(timer);
+      appStateSub?.remove();
+      pause();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Only once

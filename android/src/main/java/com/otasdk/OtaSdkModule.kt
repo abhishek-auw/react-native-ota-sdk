@@ -34,8 +34,8 @@ class OtaSdkModule(reactContext: ReactApplicationContext) :
 
     // ── Dependencies (all native, no JS) ──────────────────────────────
     private val prefs         = OTAPrefs(reactContext)
-    private val crashGuard    = CrashGuard(prefs)
     private val bundleManager = BundleManager(reactContext, prefs)
+    private val crashGuard    = CrashGuard(prefs, bundleManager)
     private val downloader    = BundleDownloader()
     private val apiClient     = OTAApiClient()
 
@@ -57,13 +57,18 @@ class OtaSdkModule(reactContext: ReactApplicationContext) :
             serverUrl  = (configMap.getString("serverUrl") ?: "").trimEnd('/'),
             channel    = configMap.getString("channel") ?: "production",
             crashThreshold = if (configMap.hasKey("crashThreshold"))
-                configMap.getInt("crashThreshold") else 3,
+                configMap.getInt("crashThreshold") else OTAPrefs.DEFAULT_CRASH_THRESHOLD,
             signingPublicKey = configMap.getString("signingPublicKey"),
         )
         Log.d(TAG, "Configured: appId=${config?.appId} server=${config?.serverUrl}")
 
-        // Run crash guard on every configure (= every app start)
-        scope.launch { runCrashGuardCheck() }
+        // The crash guard itself runs before JS loads (OtaSdkHelper), on the
+        // next launch — so it needs the threshold persisted.
+        prefs.crashThreshold = config!!.crashThreshold
+        prefs.maxUnconfirmedLaunches = if (configMap.hasKey("maxUnconfirmedLaunches"))
+            configMap.getInt("maxUnconfirmedLaunches") else OTAPrefs.DEFAULT_MAX_UNCONFIRMED_LAUNCHES
+
+        scope.launch { reportPendingRollback() }
     }
 
     // ── Update check (network call on background thread) ─────────────
@@ -95,9 +100,15 @@ class OtaSdkModule(reactContext: ReactApplicationContext) :
                     osVersion     = DeviceInfo.getOsVersion(),
                 )
 
+                // A bundle the crash guard rolled back is never offered again.
+                val blocked = result.update?.hash?.let { it in prefs.failedBundleHashes } == true
+                if (blocked) {
+                    Log.w(TAG, "Ignoring update ${result.update?.bundleId}: it was rolled back on this device")
+                }
+
                 val map = Arguments.createMap()
-                map.putBoolean("updateAvailable", result.updateAvailable)
-                if (result.updateAvailable && result.update != null) {
+                map.putBoolean("updateAvailable", result.updateAvailable && !blocked)
+                if (result.updateAvailable && result.update != null && !blocked) {
                     val u = result.update
                     map.putString("bundleId",    u.bundleId)
                     map.putString("downloadUrl", u.downloadUrl)
@@ -276,13 +287,14 @@ class OtaSdkModule(reactContext: ReactApplicationContext) :
         map.putBoolean("hasPending",       prefs.pendingBundlePath != null)
         map.putString("pendingBundleHash", prefs.pendingBundleHash)
         map.putInt("crashCount",           prefs.crashCount)
+        map.putBoolean("bundleConfirmed",  prefs.activeBundleConfirmed)
         // Surfaced so a device can be asked what runtime it declares. Without
         // it, a runtime_version_mismatch is invisible from the app side.
         map.putString("runtimeVersion",    DeviceInfo.getRuntimeVersion(reactApplicationContext))
         promise.resolve(map)
     }
 
-    // ── Called by JS after app is stable (≥5s without crash) ─────────
+    // ── Called by JS once the app is up: notifyAppReady() ────────────
 
     @ReactMethod
     fun markStable() {
@@ -366,16 +378,22 @@ class OtaSdkModule(reactContext: ReactApplicationContext) :
 
     // ── Internals ─────────────────────────────────────────────────────
 
-    private suspend fun runCrashGuardCheck() {
-        val shouldRollback = crashGuard.onAppStart()
-        if (shouldRollback) {
-            Log.w(TAG, "Crash guard triggered rollback")
-            bundleManager.rollback()
-            config?.let { cfg ->
-                reportEvent(cfg, "crash", prefs.activeBundleHash.ifEmpty { null })
-            }
-            emitEvent("OTA_EVENT", mapOf("type" to "rollback", "reason" to "crash_threshold"))
-        }
+    /**
+     * The crash guard rolls back before JS is up, so it cannot report then.
+     * It leaves the failed bundle's id behind, and the first configure()
+     * after the rollback sends it.
+     */
+    private suspend fun reportPendingRollback() {
+        val failedBundleId = prefs.rollbackToReport ?: return
+        val reason = prefs.rollbackReason.ifEmpty { "crash_threshold" }
+        prefs.clearRollbackToReport()
+        Log.w(TAG, "Crash guard rolled back bundle ${failedBundleId.ifEmpty { "(unknown id)" }}: $reason")
+        config?.let { cfg -> reportEvent(cfg, "crash", failedBundleId.ifEmpty { null }) }
+        emitEvent("OTA_EVENT", mapOf(
+            "type"     to "rollback",
+            "reason"   to reason,
+            "bundleId" to failedBundleId,
+        ))
     }
 
     private fun emitProgress(bundleId: String, progress: Float) {

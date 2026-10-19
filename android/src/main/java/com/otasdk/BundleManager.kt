@@ -83,12 +83,11 @@ class BundleManager(private val context: Context, private val prefs: OTAPrefs) {
         val pendingHash = prefs.pendingBundleHash
         val pendingId   = prefs.pendingBundleId
 
-        prefs.activeBundlePath = pendingPath
-        prefs.activeBundleHash = pendingHash
-        // Carry the id across too — clearPending() is about to drop it, and it
-        // is the only human-readable handle on what the device is running.
-        prefs.activeBundleId   = pendingId
-        prefs.clearPending()
+        // One write: the new bundle becomes active and unconfirmed, and the
+        // bundle it replaces is kept as the crash guard's rollback target.
+        // The id is carried across too — it is the only human-readable handle
+        // on what the device is running.
+        prefs.promotePendingToActive()
 
         Log.d(TAG, "Bundle applied: $pendingPath (id=$pendingId hash=$pendingHash)")
     }
@@ -278,17 +277,30 @@ class BundleManager(private val context: Context, private val prefs: OTAPrefs) {
         prefs.activeBundleHash = ""
         prefs.activeBundleId   = ""
         prefs.clearPending()
+        prefs.clearPrevious()
         prefs.resetCrashCount()
     }
 
     /**
-     * Delete all OTA bundles except the current active one.
-     * Called periodically to clean up old bundles.
+     * Crash-guard rollback: replace the failing active bundle with the
+     * previous good one, or with the bundled asset when there is none or its
+     * file is gone. The failing bundle's hash is blocklisted.
+     */
+    fun rollbackToPrevious(reason: String) {
+        val previous = prefs.previousBundlePath?.takeIf { File(it).exists() }
+        Log.w(TAG, "Rolling back bundle ${prefs.activeBundleHash} to " +
+            (previous ?: "the bundled asset"))
+        prefs.rollBackActiveBundle(previous, reason)
+    }
+
+    /**
+     * Delete all OTA bundles except the active one and the crash guard's
+     * rollback target.
      */
     fun cleanOldBundles() {
-        val activeHash = prefs.activeBundleHash
+        val keep = setOf(prefs.activeBundleHash, prefs.previousBundleHash)
         otaRoot.listFiles()?.forEach { dir ->
-            if (dir.isDirectory && dir.name != activeHash) {
+            if (dir.isDirectory && dir.name !in keep) {
                 Log.d(TAG, "Cleaning old bundle: ${dir.name}")
                 dir.deleteRecursively()
             }
