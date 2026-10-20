@@ -157,12 +157,49 @@ export function configureOTA(
 }
 
 function setupSubscriptions(): void {
-  onDownloadProgress(({ progress }) => setSnapshot({ downloadProgress: progress }));
+  onDownloadProgress(({ progress }) => pushProgress(progress));
   onOTAEvent((event) => {
     if (event.type === 'download_complete') setSnapshot({ status: 'ready_to_install' });
     if (event.type === 'download_failed') setSnapshot({ status: 'error', error: event.error });
     if (event.type === 'rollback') setSnapshot({ status: 'idle' });
   });
+}
+
+// ── Download-progress throttle ────────────────────────────────────────────
+// Native streams progress per 8 KB chunk, unthrottled — hundreds to thousands
+// of events for a multi-MB bundle, delivered in tight bridge batches. Pushing
+// each straight into the snapshot re-rendered every useOTA subscriber per chunk,
+// and the burst tripped useSyncExternalStore's tearing check, crashing with
+// "Maximum update depth exceeded". Coalesce to at most one snapshot update per
+// PROGRESS_MIN_INTERVAL_MS (leading + trailing), always flushing the final
+// value — ~10 updates/sec is smooth for a progress bar and well within what
+// React handles. downloadProgress is advisory state; dropping intermediate
+// ticks loses nothing a consumer can observe.
+const PROGRESS_MIN_INTERVAL_MS = 100;
+let lastProgressEmit = 0;
+let pendingProgress: number | null = null;
+let progressTimer: ReturnType<typeof setTimeout> | null = null;
+
+function flushProgress(): void {
+  if (progressTimer) {
+    clearTimeout(progressTimer);
+    progressTimer = null;
+  }
+  if (pendingProgress == null) return;
+  lastProgressEmit = Date.now();
+  const next = pendingProgress;
+  pendingProgress = null;
+  setSnapshot({ downloadProgress: next });
+}
+
+function pushProgress(progress: number): void {
+  pendingProgress = progress;
+  const elapsed = Date.now() - lastProgressEmit;
+  if (elapsed >= PROGRESS_MIN_INTERVAL_MS) {
+    flushProgress();
+  } else if (!progressTimer) {
+    progressTimer = setTimeout(flushProgress, PROGRESS_MIN_INTERVAL_MS - elapsed);
+  }
 }
 
 async function readActiveBundle(): Promise<void> {
@@ -314,4 +351,10 @@ export function __resetForTests(): void {
   autoConfirmStarted = false;
   currentOptions = {};
   restarting = false;
+  lastProgressEmit = 0;
+  pendingProgress = null;
+  if (progressTimer) {
+    clearTimeout(progressTimer);
+    progressTimer = null;
+  }
 }

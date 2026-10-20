@@ -127,4 +127,30 @@ describe('otaStore', () => {
     expect(listener).toHaveBeenCalled();
     unsub();
   });
+
+  it('coalesces a flood of download-progress events into few store updates', async () => {
+    configureOTA(CONFIG, { autoCheck: false });
+    await flush();
+
+    // The handler the store registered with onDownloadProgress during configure.
+    const progressHandler = (native.onDownloadProgress as jest.Mock).mock
+      .calls[0][0];
+    expect(typeof progressHandler).toBe('function');
+
+    const listener = jest.fn();
+    const unsub = subscribe(listener);
+
+    // Simulate the native per-8KB flood: a tight synchronous burst of events —
+    // exactly what tripped useSyncExternalStore. Without coalescing this would
+    // notify subscribers ~50 times; leading+trailing throttle collapses a
+    // synchronous burst to a single immediate emit.
+    for (let i = 1; i <= 50; i++) {
+      progressHandler({ bundleId: 'b1', progress: i / 50 });
+    }
+
+    expect(listener.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(getSnapshot().downloadProgress).toBeGreaterThan(0);
+
+    unsub();
+  });
 });

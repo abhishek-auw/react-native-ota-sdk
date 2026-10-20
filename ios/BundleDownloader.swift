@@ -81,9 +81,16 @@ class BundleDownloader: NSObject {
             }
         }
 
-        // Observe progress
+        // Observe progress. Emit at most once per whole percent — the KVO
+        // observer fires far more often, and forwarding every tick floods the JS
+        // bridge and the OTA store's subscribers.
+        var lastPercent = -1
         let observation = task.progress.observe(\.fractionCompleted) { progress, _ in
-            onProgress?(progress.fractionCompleted)
+            let percent = Int(progress.fractionCompleted * 100)
+            if percent != lastPercent {
+                lastPercent = percent
+                onProgress?(progress.fractionCompleted)
+            }
         }
 
         task.resume()

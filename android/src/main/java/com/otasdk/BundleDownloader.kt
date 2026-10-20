@@ -71,11 +71,19 @@ class BundleDownloader {
                 FileOutputStream(destFile).use { output ->
                     val buffer = ByteArray(8 * 1024)
                     var bytesRead: Int
+                    // Emit at most once per whole percent. A multi-MB bundle is
+                    // thousands of 8 KB reads; firing onProgress on each one
+                    // floods the JS bridge and the OTA store's subscribers.
+                    var lastPercent = -1
                     while (input.read(buffer).also { bytesRead = it } != -1) {
                         output.write(buffer, 0, bytesRead)
                         totalBytesRead += bytesRead
                         if (contentLength > 0) {
-                            onProgress?.invoke(totalBytesRead.toFloat() / contentLength.toFloat())
+                            val percent = (totalBytesRead * 100 / contentLength).toInt()
+                            if (percent != lastPercent) {
+                                lastPercent = percent
+                                onProgress?.invoke(totalBytesRead.toFloat() / contentLength.toFloat())
+                            }
                         }
                     }
                     output.flush()
