@@ -8,6 +8,21 @@ struct OTAConfig {
     /// Optional ECDSA P-256 public key (PEM SPKI) embedded at build time.
     /// When set, every bundle must carry a valid signature from the server.
     let signingPublicKey: String?
+    /// JSON-serialized arbitrary analytics params bag from JS, e.g.
+    /// `{"userId":"u1"}`. Parsed and nested under `params` in the update-check
+    /// and analytics request bodies. nil when the app passed no params.
+    let paramsJson: String?
+}
+
+/// Parses the JS-supplied analytics params bag (a JSON object string) into a
+/// dictionary. Returns nil for blank or malformed JSON — an analytics add-on
+/// must never break an update check.
+private func parseParams(_ paramsJson: String?) -> [String: Any]? {
+    guard let paramsJson = paramsJson, !paramsJson.isEmpty,
+          let data = paramsJson.data(using: .utf8),
+          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else { return nil }
+    return obj
 }
 
 struct UpdateCheckResult {
@@ -47,7 +62,8 @@ class OTAApiClient {
                         versionCode: String? = nil,
                         deviceModel: String? = nil,
                         deviceBrand: String? = nil,
-                        osVersion: String? = nil) throws -> UpdateCheckResult {
+                        osVersion: String? = nil,
+                        paramsJson: String? = nil) throws -> UpdateCheckResult {
 
         guard let url = URL(string: "\(serverUrl)/v1/update/check") else {
             throw URLError(.badURL)
@@ -67,6 +83,8 @@ class OTAApiClient {
         if let deviceModel = deviceModel, !deviceModel.isEmpty { payload["deviceModel"] = deviceModel }
         if let deviceBrand = deviceBrand, !deviceBrand.isEmpty { payload["deviceBrand"] = deviceBrand }
         if let osVersion = osVersion, !osVersion.isEmpty { payload["osVersion"] = osVersion }
+        // App-supplied analytics params, e.g. { "userId": "u1" }.
+        if let params = parseParams(paramsJson) { payload["params"] = params }
 
         let json = try JSONSerialization.data(withJSONObject: payload)
         var request = URLRequest(url: url, timeoutInterval: 15)
@@ -118,7 +136,8 @@ class OTAApiClient {
     // MARK: - Analytics (fire and forget)
 
     func reportEvent(serverUrl: String, appId: String, bundleId: String?,
-                     deviceHash: String, eventType: String, platform: String) {
+                     deviceHash: String, eventType: String, platform: String,
+                     paramsJson: String? = nil) {
         guard let url = URL(string: "\(serverUrl)/v1/analytics/event") else { return }
 
         var payload: [String: Any] = [
@@ -128,6 +147,8 @@ class OTAApiClient {
             "platform":   platform,
         ]
         if let bid = bundleId { payload["bundleId"] = bid }
+        // App-supplied analytics params, e.g. { "userId": "u1" }.
+        if let params = parseParams(paramsJson) { payload["params"] = params }
 
         guard let json = try? JSONSerialization.data(withJSONObject: payload) else { return }
         var request = URLRequest(url: url, timeoutInterval: 10)

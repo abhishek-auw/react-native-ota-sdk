@@ -59,6 +59,7 @@ class OtaSdkModule(reactContext: ReactApplicationContext) :
             crashThreshold = if (configMap.hasKey("crashThreshold"))
                 configMap.getInt("crashThreshold") else OTAPrefs.DEFAULT_CRASH_THRESHOLD,
             signingPublicKey = configMap.getString("signingPublicKey"),
+            paramsJson = configMap.getString("paramsJson"),
         )
         Log.d(TAG, "Configured: appId=${config?.appId} server=${config?.serverUrl}")
 
@@ -103,6 +104,7 @@ class OtaSdkModule(reactContext: ReactApplicationContext) :
                     deviceModel   = DeviceInfo.getModel(),
                     deviceBrand   = DeviceInfo.getBrand(),
                     osVersion     = DeviceInfo.getOsVersion(),
+                    paramsJson    = cfg.paramsJson,
                 )
 
                 // A bundle the crash guard rolled back is never offered again.
@@ -437,6 +439,7 @@ class OtaSdkModule(reactContext: ReactApplicationContext) :
                 deviceHash = DeviceInfo.getDeviceHash(reactApplicationContext),
                 eventType  = eventType,
                 platform   = "android",
+                paramsJson = cfg.paramsJson,
             )
         } catch (e: Exception) {
             Log.w(TAG, "Analytics event failed (non-fatal): ${e.message}")

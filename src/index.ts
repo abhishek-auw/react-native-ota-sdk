@@ -75,6 +75,13 @@ export interface OTAConfig {
    * OTA_SIGNING_KEY in CI so the CLI can sign bundles on upload.
    */
   signingPublicKey?: string;
+  /**
+   * Arbitrary key/value bag attached to every server call — the update check
+   * and the analytics events — for analytics. Use it to pass your own
+   * identifiers, e.g. `{ userId: 'u1' }`. Sent nested under `params` in the
+   * request body. All values should be strings.
+   */
+  params?: Record<string, string>;
 }
 
 export interface UpdateInfo {
@@ -187,6 +194,10 @@ export function configure(config: OTAConfig): void {
     maxUnconfirmedLaunches: config.maxUnconfirmedLaunches ?? 5,
     rollbackOnCrash:  config.rollbackOnCrash ?? false,
     signingPublicKey: config.signingPublicKey ?? null,
+    // The params bag crosses the native bridge as a JSON string — this keeps an
+    // open-ended key/value map codegen-safe on the New Architecture. Native
+    // parses it back and nests it under `params` in each request body.
+    paramsJson:       config.params ? JSON.stringify(config.params) : null,
   });
 }
 
@@ -354,3 +365,10 @@ export async function checkAndApply(options?: {
 // OTAProvider and useOTA live in their own file to keep the core module
 // importable in non-React environments (e.g. CLI / Node scripts).
 export { OTAProvider, useOTA } from './OTAProvider';
+export type {
+  OTAState,
+  OTAProviderProps,
+  OTAInitOptions,
+  OTASnapshot,
+  OTAStatus,
+} from './OTAProvider';

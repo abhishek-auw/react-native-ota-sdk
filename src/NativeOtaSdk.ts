@@ -20,6 +20,13 @@ export interface ConfigMap {
   rollbackOnCrash?: boolean;
   /** Optional ECDSA P-256 public key (PEM SPKI) embedded at build time for bundle signature verification */
   signingPublicKey?: string;
+  /**
+   * JSON-serialized arbitrary analytics params bag, e.g. `{"userId":"u1"}`.
+   * Kept as a string (not a nested object) so the open-ended map stays
+   * codegen-safe on the New Architecture. Native parses it and nests it under
+   * `params` in the update-check and analytics request bodies.
+   */
+  paramsJson?: string;
 }
 
 export interface UpdateCheckResult {

@@ -1,132 +1,124 @@
 /**
- * OTAProvider — optional React context wrapper.
- * Gives any component access to OTA state via useOTA().
+ * useOTA — standalone hook for OTA updates, plus the optional OTAProvider.
  *
- * Usage:
- *   // index.js or App.tsx
- *   import { OTAProvider } from 'react-native-ota-sdk';
+ * `useOTA(config)` configures the SDK and returns live OTA state and actions,
+ * backed by a process-wide singleton store (./otaStore). It needs no provider
+ * and can be called in any number of components — they all share one configure,
+ * one update check, and one set of native subscriptions.
  *
- *   export default function App() {
- *     return (
- *       <OTAProvider
- *         config={{ appId: 'xxx', serverUrl: 'https://ota.company.com' }}
- *         checkOnMount
- *       >
- *         <RootNavigator />
- *       </OTAProvider>
- *     );
+ * Config can arrive asynchronously: pass `null` until you've fetched the OTA
+ * server URL from your backend, then pass the real config. While unconfigured
+ * the hook stays idle and makes no native calls.
+ *
+ * `OTAProvider` remains as a thin, backward-compatible wrapper — it just calls
+ * `useOTA` and renders its children.
+ *
+ * Usage (no provider, deferred config):
+ *   function App() {
+ *     const [otaConfig, setOtaConfig] = useState(null);
+ *     useEffect(() => {
+ *       fetchBootstrap().then((cfg) =>
+ *         setOtaConfig({ appId: cfg.appId, serverUrl: cfg.ota_url, channel: cfg.ota_channel }),
+ *       );
+ *     }, []);
+ *     const ota = useOTA(otaConfig); // idle until otaConfig is set
+ *     // ota.status, ota.updateInfo, ota.checkForUpdate(), ota.applyUpdate(), ota.restartApp()
  *   }
+ *
+ * Usage (imperative configure):
+ *   const ota = useOTA();
+ *   // later, inside your fetch:
+ *   ota.configure({ appId, serverUrl, channel });
+ *
+ * Usage (provider, unchanged):
+ *   <OTAProvider config={{ appId, serverUrl }} checkOnMount>
+ *     <RootNavigator />
+ *   </OTAProvider>
  */
-import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-} from 'react';
-import { AppState } from 'react-native';
+import React, { useEffect, useSyncExternalStore } from 'react';
 import {
-  configure,
+  subscribe,
+  getSnapshot,
+  configureOTA,
   checkForUpdate,
-  downloadBundle,
-  applyPendingBundle,
-  getStatus,
-  notifyAppReady,
-  onDownloadProgress,
-  onOTAEvent,
-  restartApp,
-  type ActiveBundleInfo,
-  type OTAConfig,
-  type UpdateInfo,
-} from './index';
+  applyUpdate,
+  restart,
+} from './otaStore';
+import type { OTASnapshot, OTAInitOptions } from './otaStore';
+import type { OTAConfig, ActiveBundleInfo } from './index';
 
-// ── Context ───────────────────────────────────────────────────────────
+export type { OTAInitOptions, OTASnapshot, OTAStatus } from './otaStore';
 
-interface OTAState {
-  status:
-    | 'idle'
-    | 'checking'
-    | 'update_available'
-    | 'downloading'
-    | 'ready_to_install'
-    | 'up_to_date'
-    | 'error';
-  updateInfo: UpdateInfo | null;
-  downloadProgress: number;       // 0–1
-  error: string | null;
-  /**
-   * Which bundle the running JS came from. null until the native layer has
-   * answered (one tick after mount), and on platforms where the native module
-   * is missing.
-   */
-  activeBundle: ActiveBundleInfo | null;
+export interface OTAState extends OTASnapshot {
+  /** Check the server for an update now. */
   checkForUpdate: () => Promise<void>;
-  /** Download + apply. Leaves status at 'ready_to_install'. */
+  /** Download + apply the available update. Leaves status at 'ready_to_install'. */
   applyUpdate: () => Promise<void>;
-  /**
-   * Restart now, loading the bundle that applyUpdate() staged.
-   *
-   * Only meaningful once status is 'ready_to_install'. Calling it earlier
-   * reloads the bundle already running, which looks like the update failing.
-   * Nothing after the await is guaranteed to run.
-   */
+  /** Restart to load the staged bundle. Only valid once status is 'ready_to_install'. */
   restartApp: () => Promise<void>;
+  /**
+   * Imperatively configure the SDK with the config you fetched from your
+   * backend. Equivalent to passing it as the first arg to `useOTA`, but handy
+   * when you'd rather call it from inside your fetch's `.then()` than thread it
+   * through state. Idempotent — deduped by content.
+   */
+  configure: (config: OTAConfig, options?: OTAInitOptions) => void;
 }
 
-const OTAContext = createContext<OTAState | null>(null);
+/**
+ * Subscribe to OTA state and (optionally) configure the SDK.
+ *
+ * Pass `config` once you have it; pass `null`/`undefined` until then (e.g. while
+ * you fetch the OTA URL from your backend). Safe to call in multiple components
+ * — state is a shared singleton, so configure/check/subscriptions run once.
+ */
+export function useOTA(
+  config?: OTAConfig | null,
+  options?: OTAInitOptions,
+): OTAState {
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
-// ── Provider ──────────────────────────────────────────────────────────
+  // Reactive configure: runs when a config with a real serverUrl first appears,
+  // or when its contents change. The store dedupes identical configs, so a fresh
+  // object literal with the same values each render does not re-configure.
+  useEffect(() => {
+    if (config && config.serverUrl) configureOTA(config, options);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config ? JSON.stringify(config) : null]);
 
-interface OTAProviderProps {
+  return {
+    ...snapshot,
+    checkForUpdate,
+    applyUpdate,
+    restartApp: restart,
+    configure: configureOTA,
+  };
+}
+
+// ── OTAProvider (optional, backward-compatible wrapper) ──────────────────
+
+export interface OTAProviderProps {
   config: OTAConfig;
   children: React.ReactNode;
-  /** Auto-check for updates when component mounts. Default: true */
+  /** Auto-check for updates once configured. Default: true. */
   checkOnMount?: boolean;
-  /**
-   * Call `notifyAppReady()` once the app has rendered and spent
-   * `stableAfterMs` in the foreground. Default: true.
-   *
-   * Turn it off to call `notifyAppReady()` yourself, at the point your app is
-   * genuinely usable (first screen rendered, first API call answered) — a
-   * stronger signal than time passing.
-   */
+  /** Auto-confirm the bundle after `stableAfterMs` in the foreground. Default: true. */
   autoConfirm?: boolean;
-  /**
-   * With autoConfirm, how long the app must be in the foreground before the
-   * bundle is confirmed. Time in the background does not count. Default: 5000
-   */
+  /** Foreground time before auto-confirm. Default: 5000ms. */
   stableAfterMs?: number;
-  /**
-   * Called once on mount with the bundle the running JS was loaded from —
-   * the OTA bundle id, or `isEmbedded: true` for the JS shipped in the binary.
-   *
-   * Use it to tag crash reports and analytics with the JS actually executing.
-   *
-   * It fires once per mount and deliberately does not fire again after an
-   * update is applied: `applyPendingBundle()` only repoints the bundle for the
-   * *next* launch, so re-reporting then would name JS that isn't running. On
-   * the reload that follows, the provider remounts and this fires with the
-   * new id.
-   */
+  /** Called once with the bundle the running JS booted from. */
   onActiveBundle?: (bundle: ActiveBundleInfo) => void;
-  /**
-   * Run just before the process is killed by `restartApp()`.
-   *
-   * The restart is a real relaunch — `System.exit(0)` after starting the
-   * launcher activity — so anything the app has buffered but not sent goes
-   * with it. Firebase Analytics batches events on its own schedule and will
-   * not have flushed; the same is true of any queue you maintain yourself.
-   *
-   * Awaited, then capped at `beforeRestartTimeoutMs` so a hung flush cannot
-   * strand the user on a button that does nothing. A rejection is logged and
-   * ignored: failing to flush analytics is not a reason to block an update.
-   */
+  /** Run just before `restartApp()` takes the process down. */
   onBeforeRestart?: () => void | Promise<void>;
-  /** Ceiling on onBeforeRestart. Default: 2000ms. */
+  /** Ceiling on `onBeforeRestart`. Default: 2000ms. */
   beforeRestartTimeoutMs?: number;
 }
 
+/**
+ * Optional wrapper, kept for backward compatibility. With the singleton store a
+ * provider is no longer required — `useOTA` works anywhere — but this still lets
+ * you configure the SDK declaratively at the top of your tree.
+ */
 export function OTAProvider({
   config,
   children,
@@ -137,224 +129,13 @@ export function OTAProvider({
   onBeforeRestart,
   beforeRestartTimeoutMs = 2000,
 }: OTAProviderProps) {
-  const [status, setStatus]     = useState<OTAState['status']>('idle');
-  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
-  const [progress, setProgress] = useState(0);
-  const [error, setError]       = useState<string | null>(null);
-  const [activeBundle, setActiveBundle] = useState<ActiveBundleInfo | null>(null);
-
-  // Hold the config in a ref so the mount effect can read it without
-  // re-running when the caller passes a fresh object literal each render.
-  const configRef = useRef(config);
-  configRef.current = config;
-
-  const autoConfirmRef = useRef(autoConfirm);
-  autoConfirmRef.current = autoConfirm;
-
-  const stableAfterMsRef = useRef(stableAfterMs);
-  stableAfterMsRef.current = stableAfterMs;
-
-  const onActiveBundleRef = useRef(onActiveBundle);
-  onActiveBundleRef.current = onActiveBundle;
-
-  const onBeforeRestartRef = useRef(onBeforeRestart);
-  onBeforeRestartRef.current = onBeforeRestart;
-
-  const beforeRestartTimeoutMsRef = useRef(beforeRestartTimeoutMs);
-  beforeRestartTimeoutMsRef.current = beforeRestartTimeoutMs;
-
-  // Configure native SDK once
-  useEffect(() => {
-    configure(configRef.current);
-
-    // Ask native which bundle this session booted from. Read here, before any
-    // download or apply, so the answer describes the JS that is executing.
-    let disposed = false;
-    (async () => {
-      try {
-        const s = await getStatus();
-        if (disposed) return;
-        const bundle: ActiveBundleInfo = {
-          bundleId:   s.activeBundleId || null,
-          hash:       s.activeBundleHash,
-          path:       s.activeBundlePath,
-          isEmbedded: !s.activeBundlePath,
-        };
-        setActiveBundle(bundle);
-        onActiveBundleRef.current?.(bundle);
-      } catch (e) {
-        // Best-effort telemetry — never let it break app startup.
-        if (__DEV__) console.warn('[OTA] could not read active bundle', e);
-      }
-    })();
-
-    // Subscribe to native events
-    const progressSub = onDownloadProgress(({ progress: p }) => setProgress(p));
-    const eventSub = onOTAEvent((event) => {
-      if (event.type === 'download_complete') setStatus('ready_to_install');
-      if (event.type === 'download_failed')  { setStatus('error'); setError(event.error); }
-      if (event.type === 'rollback')         setStatus('idle');
-    });
-
-    // Confirm the bundle once the app has rendered (effects run after the
-    // first commit) and spent stableAfterMs in the foreground. The clock stops
-    // in the background: a bundle the user never actually used is not proven.
-    let remaining = stableAfterMsRef.current;
-    let startedAt = 0;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const resume = () => {
-      if (timer || remaining <= 0) return;
-      startedAt = Date.now();
-      timer = setTimeout(() => {
-        timer = null;
-        remaining = 0;
-        notifyAppReady();
-      }, remaining);
-    };
-    const pause = () => {
-      if (!timer) return;
-      clearTimeout(timer);
-      timer = null;
-      remaining -= Date.now() - startedAt;
-    };
-    const appStateSub = autoConfirmRef.current
-      ? AppState.addEventListener('change', (state) => {
-          if (state === 'active') resume();
-          else if (state === 'background') pause();
-        })
-      : null;
-    if (autoConfirmRef.current && AppState.currentState !== 'background') resume();
-
-    return () => {
-      disposed = true;
-      progressSub.remove();
-      eventSub.remove();
-      appStateSub?.remove();
-      pause();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Only once
-
-  const doApplyUpdate = useCallback(async (info?: UpdateInfo | null) => {
-    const target = info ?? updateInfo;
-    if (!target) return;
-
-    setStatus('downloading');
-    setProgress(0);
-    try {
-      // Forward the delta patch fields and the ECDSA signature so native can
-      // apply a patch instead of a full download, and reject tampered bundles.
-      await downloadBundle(target.bundleId, target.downloadUrl, target.hash, {
-        patchUrl:  target.patchUrl,
-        patchHash: target.patchHash,
-        fromHash:  target.fromHash,
-        signature: target.signature,
-      });
-      await applyPendingBundle();
-      setStatus('ready_to_install');
-    } catch (e: any) {
-      setStatus('error');
-      setError(e?.message ?? 'Download failed');
-    }
-  }, [updateInfo]);
-
-  /**
-   * Guarded so a double tap cannot start two teardowns. The first call takes
-   * the process down mid-flight, so the second lands in an instance that is
-   * already disappearing — which surfaces as an unhandled rejection rather
-   * than anything useful.
-   */
-  const restartingRef = useRef(false);
-  const doRestart = useCallback(async () => {
-    if (restartingRef.current) return;
-    if (status !== 'ready_to_install') {
-      // Restarting without a staged bundle reloads what is already running.
-      // Failing loudly here beats a button that looks like it did nothing.
-      //
-      // Warn as well as setting state: callers who only render the happy path
-      // see a dead button and no error, which is the worst of both.
-      console.warn(
-        `[OTA] restartApp() ignored — status is '${status}', expected ` +
-          `'ready_to_install'. Call applyUpdate() first and wait for it to resolve.`,
-      );
-      setError('Nothing staged to apply — call applyUpdate() first');
-      setStatus('error');
-      return;
-    }
-    restartingRef.current = true;
-    try {
-      const flush = onBeforeRestartRef.current;
-      if (flush) {
-        // Bounded: a flush that never settles must not become a dead button.
-        await Promise.race([
-          Promise.resolve(flush()).catch((e) => {
-            console.warn('[OTA] onBeforeRestart threw, restarting anyway', e);
-          }),
-          new Promise((r) => setTimeout(r, beforeRestartTimeoutMsRef.current)),
-        ]);
-      }
-      await restartApp();
-    } catch (e: any) {
-      restartingRef.current = false;
-      setStatus('error');
-      setError(e?.message ?? 'Restart failed');
-    }
-  }, [status]);
-
-  const doCheckForUpdate = useCallback(async () => {
-    setStatus('checking');
-    setError(null);
-    try {
-      const result = await checkForUpdate();
-      if (__DEV__) {
-        console.log('[OTA] check result', JSON.stringify(result));
-      }
-      if (!result.updateAvailable) {
-        setStatus('up_to_date');
-        return;
-      }
-      setUpdateInfo(result);
-      setStatus('update_available');
-
-      // Auto-download mandatory updates immediately
-      if (result.mandatory) {
-        await doApplyUpdate(result);
-      }
-    } catch (e: any) {
-      setStatus('error');
-      setError(e?.message ?? 'Update check failed');
-    }
-  }, [doApplyUpdate]);
-
-  // Auto-check on mount
-  const checkOnMountRef = useRef(checkOnMount);
-  useEffect(() => {
-    if (checkOnMountRef.current) doCheckForUpdate();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  return (
-    <OTAContext.Provider
-      value={{
-        status,
-        updateInfo,
-        downloadProgress: progress,
-        error,
-        activeBundle,
-        checkForUpdate:  doCheckForUpdate,
-        applyUpdate:     () => doApplyUpdate(),
-        restartApp:      doRestart,
-      }}
-    >
-      {children}
-    </OTAContext.Provider>
-  );
-}
-
-// ── Hook ──────────────────────────────────────────────────────────────
-
-export function useOTA(): OTAState {
-  const ctx = useContext(OTAContext);
-  if (!ctx) throw new Error('useOTA must be used inside <OTAProvider>');
-  return ctx;
+  useOTA(config, {
+    autoCheck: checkOnMount,
+    autoConfirm,
+    stableAfterMs,
+    onActiveBundle,
+    onBeforeRestart,
+    beforeRestartTimeoutMs,
+  });
+  return <>{children}</>;
 }

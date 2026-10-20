@@ -35,7 +35,8 @@ class OtaSdk: RCTEventEmitter {
                                 .replacingOccurrences(of: "/+$", with: "", options: .regularExpression),
             channel:          configDict["channel"]         as? String ?? "production",
             crashThreshold:   configDict["crashThreshold"]  as? Int    ?? OTAPrefs.defaultCrashThreshold,
-            signingPublicKey: configDict["signingPublicKey"] as? String
+            signingPublicKey: configDict["signingPublicKey"] as? String,
+            paramsJson:       configDict["paramsJson"]       as? String
         )
         NSLog("[OTA] Configured appId=%@ server=%@", config!.appId, config!.serverUrl)
 
@@ -84,7 +85,8 @@ class OtaSdk: RCTEventEmitter {
                     versionCode: buildNumber,
                     deviceModel: DeviceInfo.model(),
                     deviceBrand: DeviceInfo.brand(),
-                    osVersion:   DeviceInfo.osVersion()
+                    osVersion:   DeviceInfo.osVersion(),
+                    paramsJson:  cfg.paramsJson
                 )
 
                 // A bundle the crash guard rolled back is never offered again.
@@ -220,7 +222,8 @@ class OtaSdk: RCTEventEmitter {
                 // Analytics — fire and forget
                 self.apiClient.reportEvent(serverUrl: cfg.serverUrl, appId: cfg.appId,
                                            bundleId: bundleId, deviceHash: DeviceInfo.deviceHash(),
-                                           eventType: "download", platform: "ios")
+                                           eventType: "download", platform: "ios",
+                                           paramsJson: cfg.paramsJson)
 
                 self.sendEvent(withName: "OTA_EVENT",
                                body: ["type": "download_complete",
@@ -284,7 +287,8 @@ class OtaSdk: RCTEventEmitter {
                 self.apiClient.reportEvent(
                     serverUrl: cfg.serverUrl, appId: cfg.appId,
                     bundleId: nil, deviceHash: DeviceInfo.deviceHash(),
-                    eventType: "install_ok", platform: "ios"
+                    eventType: "install_ok", platform: "ios",
+                    paramsJson: cfg.paramsJson
                 )
             }
         }
@@ -345,7 +349,8 @@ class OtaSdk: RCTEventEmitter {
                 serverUrl: cfg.serverUrl, appId: cfg.appId,
                 bundleId: failedBundleId.isEmpty ? nil : failedBundleId,
                 deviceHash: DeviceInfo.deviceHash(),
-                eventType: "crash", platform: "ios"
+                eventType: "crash", platform: "ios",
+                paramsJson: cfg.paramsJson
             )
         }
         sendEvent(withName: "OTA_EVENT",

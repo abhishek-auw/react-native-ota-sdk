@@ -284,6 +284,58 @@ export default function App() {
 | `stableAfterMs` | `number` | `5000` | With `autoConfirm`, foreground time before the bundle is confirmed. Background time does not count |
 | `onActiveBundle` | `(bundle: ActiveBundleInfo) => void` | — | Reports which bundle the running JS came from. See below |
 
+#### Without a provider — `useOTA(config)` (deferred config)
+
+You don't have to wrap your app. Call `useOTA(config)` directly and it configures
+the SDK for you. The hook is backed by a shared singleton, so you can call it in
+any number of components — configure, the update check, and the native event
+subscriptions each run **once**, and every caller sees the same state.
+
+Config can arrive **after** startup. If you fetch the OTA server URL from your own
+backend first, pass `null`/`undefined` until you have it — the hook stays idle
+(`status: 'idle'`, `configured: false`) and makes **no** native calls — then pass
+the real config and it configures and checks exactly once:
+
+```tsx
+import { useState, useEffect } from 'react';
+import { useOTA } from 'react-native-ota-sdk';
+
+function App() {
+  const [otaConfig, setOtaConfig] = useState(null);
+
+  useEffect(() => {
+    // your own bootstrap call to your backend
+    fetchBootstrap().then((cfg) =>
+      setOtaConfig({ appId: cfg.appId, serverUrl: cfg.ota_url, channel: cfg.ota_channel }),
+    );
+  }, []);
+
+  const ota = useOTA(otaConfig); // idle until otaConfig is set
+  // ota.configured, ota.status, ota.updateInfo,
+  // ota.checkForUpdate(), ota.applyUpdate(), ota.restartApp()
+}
+```
+
+Prefer to configure imperatively? The hook also returns a `configure` you can
+call from inside your fetch:
+
+```tsx
+const ota = useOTA();
+
+useEffect(() => {
+  fetchBootstrap().then((cfg) =>
+    ota.configure({ appId: cfg.appId, serverUrl: cfg.ota_url, channel: cfg.ota_channel }),
+  );
+}, []);
+```
+
+`useOTA(config, options)` takes the same options as the provider props
+(`autoConfirm`, `stableAfterMs`, `onActiveBundle`, `onBeforeRestart`,
+`beforeRestartTimeoutMs`), plus **`autoCheck`** (default `true`) — the hook's name
+for the provider's `checkOnMount`: run one update check as soon as the SDK is
+configured. `OTAProvider` is now just a thin wrapper over this hook, so both
+styles behave identically.
+
 #### A restart button
 
 `useOTA()` gives you the download state and a `restartApp()` that applies the
@@ -364,8 +416,8 @@ interface ActiveBundleInfo {
 }
 ```
 
-The same value is on the `useOTA()` context as `activeBundle` (`null` until
-native answers, one tick after mount).
+The same value is on the `useOTA()` state as `activeBundle` (`null` until
+native answers, one tick after configure).
 
 Two things to keep in mind:
 
@@ -463,6 +515,7 @@ interface OTAConfig {
   crashThreshold?: number;    // default: 3
   maxUnconfirmedLaunches?: number; // default: 5
   signingPublicKey?: string;  // PEM SPKI, ECDSA P-256
+  params?: Record<string, string>; // analytics bag, e.g. { userId: 'u1' }
 }
 ```
 
@@ -490,6 +543,22 @@ in the dashboard under **Apps → Signing Key**, embed the public half here, and
 store the private half as `OTA_SIGNING_KEY` in CI so the CLI can sign on upload.
 
 Leaving it unset means bundles are accepted on hash alone. Set it for production.
+
+**`params`** is an optional bag of your own key/value identifiers — for example
+`{ userId: 'u1' }` — attached to every server call for analytics: the update
+check (`/v1/update/check`) and each analytics event (`install_ok`, `download`,
+`crash`). The server receives them nested under a `params` field in the request
+body. Values should be strings. Set it once in `configure()`:
+
+```ts
+configure({
+  appId: 'your-app-uuid',
+  serverUrl: 'https://ota.yourcompany.com',
+  params: { userId: currentUser.id },
+});
+```
+
+Omit it and no `params` field is sent, so it is fully backward-compatible.
 
 ---
 

@@ -21,6 +21,16 @@ private fun JSONObject.optStringOrNull(name: String): String? =
     if (isNull(name)) null else optString(name).ifEmpty { null }
 
 /**
+ * Parses the JS-supplied analytics params bag (a JSON object string) and nests
+ * it under `params` in the request body. Malformed or blank JSON is skipped
+ * silently — an analytics add-on must never break an update check.
+ */
+private fun JSONObject.putParams(paramsJson: String?) {
+    val raw = paramsJson?.takeIf { it.isNotBlank() } ?: return
+    runCatching { JSONObject(raw) }.getOrNull()?.let { put("params", it) }
+}
+
+/**
  * Thin HTTP client for OTA backend API calls.
  * Runs on a background thread — never call from main thread.
  */
@@ -69,6 +79,7 @@ class OTAApiClient {
         deviceModel: String? = null,
         deviceBrand: String? = null,
         osVersion: String? = null,
+        paramsJson: String? = null,
     ): UpdateCheckResult {
         val body = JSONObject().apply {
             put("appId",             appId)
@@ -83,6 +94,8 @@ class OTAApiClient {
             deviceModel?.takeIf { it.isNotBlank() }?.let { put("deviceModel", it) }
             deviceBrand?.takeIf { it.isNotBlank() }?.let { put("deviceBrand", it) }
             osVersion?.takeIf { it.isNotBlank() }?.let { put("osVersion", it) }
+            // App-supplied analytics params, e.g. { "userId": "u1" }.
+            putParams(paramsJson)
         }.toString()
 
         val request = Request.Builder()
@@ -129,6 +142,7 @@ class OTAApiClient {
         deviceHash: String,
         eventType: String,
         platform: String,
+        paramsJson: String? = null,
     ) {
         val body = JSONObject().apply {
             put("appId",      appId)
@@ -136,6 +150,8 @@ class OTAApiClient {
             put("eventType",  eventType)
             put("platform",   platform)
             bundleId?.let { put("bundleId", it) }
+            // App-supplied analytics params, e.g. { "userId": "u1" }.
+            putParams(paramsJson)
         }.toString()
 
         val request = Request.Builder()

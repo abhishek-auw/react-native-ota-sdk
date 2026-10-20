@@ -15,4 +15,10 @@ data class OTAConfig(
      * private key as OTA_SIGNING_KEY in CI, and paste the public key here.
      */
     val signingPublicKey: String? = null,
+    /**
+     * JSON-serialized arbitrary analytics params bag from JS, e.g.
+     * `{"userId":"u1"}`. Parsed and nested under `params` in the update-check
+     * and analytics request bodies. Null when the app passed no params.
+     */
+    val paramsJson: String? = null,
 )
