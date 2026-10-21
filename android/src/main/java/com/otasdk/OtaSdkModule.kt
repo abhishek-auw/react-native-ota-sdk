@@ -308,7 +308,10 @@ class OtaSdkModule(reactContext: ReactApplicationContext) :
         crashGuard.markStable()
         val cfg = config
         if (cfg != null && prefs.activeBundleHash.isNotEmpty()) {
-            scope.launch { reportEvent(cfg, "install_ok", null) }
+            // Report which bundle is now confirmed-running, mirroring the
+            // `download` event. Legacy bundles applied before activeBundleId
+            // existed carry an empty id — send null rather than "" in that case.
+            scope.launch { reportEvent(cfg, "install_ok", prefs.activeBundleId.ifEmpty { null }) }
         }
     }
 

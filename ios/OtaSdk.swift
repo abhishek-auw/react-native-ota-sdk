@@ -282,11 +282,16 @@ class OtaSdk: RCTEventEmitter {
     @objc func markStable() {
         crashGuard.markStable()
         if let cfg = config, !prefs.activeBundleHash.isEmpty {
+            // Report which bundle is now confirmed-running, mirroring the
+            // `download` event. Legacy bundles applied before activeBundleId
+            // existed carry an empty id — send nil rather than "" in that case.
+            let activeBundleId = prefs.activeBundleId
             DispatchQueue.global(qos: .background).async { [weak self] in
                 guard let self else { return }
                 self.apiClient.reportEvent(
                     serverUrl: cfg.serverUrl, appId: cfg.appId,
-                    bundleId: nil, deviceHash: DeviceInfo.deviceHash(),
+                    bundleId: activeBundleId.isEmpty ? nil : activeBundleId,
+                    deviceHash: DeviceInfo.deviceHash(),
                     eventType: "install_ok", platform: "ios",
                     paramsJson: cfg.paramsJson
                 )
